@@ -1,0 +1,17 @@
+# Build / deps
+node_modules/
+dist/
+
+# Local data (graphe d'etat, logs, memoires locales)
+data/
+
+# Clones tiers (sources d'inspiration, ne font pas partie du harnais)
+Atlas/
+Atlas-v2/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
