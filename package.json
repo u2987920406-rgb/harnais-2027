@@ -14,7 +14,8 @@
     "smoke": "tsx test/live/ollama.smoke.ts",
     "smoke:workflow": "tsx test/live/workflow.smoke.ts",
     "smoke:verifier": "tsx test/live/verifier.smoke.ts",
-    "smoke:cortex": "tsx test/live/cortex.smoke.ts"
+    "smoke:cortex": "tsx test/live/cortex.smoke.ts",
+    "smoke:scenario": "tsx test/live/scenario.smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
