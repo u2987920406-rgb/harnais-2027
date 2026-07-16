@@ -52,8 +52,10 @@ export function sandboxVerify(ctx: VerifyContext): VerifyResult {
     execSync('npx tsc --noEmit', { cwd: ctx.cwd, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
     return { ok: true, reasons: [] };
   } catch (err: any) {
-    const stderr = err.stderr ?? err.message ?? '';
-    return { ok: false, reasons: [`typecheck echec: ${stderr.slice(0, 400)}`] };
+    // tsc ecrit ses diagnostics sur stdout (pas stderr) — on lit les deux.
+    const out = (err.stdout ?? '') + (err.stderr ?? '');
+    const detail = out.trim() || err.message || 'erreur inconnue';
+    return { ok: false, reasons: [`typecheck echec: ${detail.slice(0, 400)}`] };
   }
 }
 

@@ -15,3 +15,4 @@ Atlas-v2/
 # OS / editor
 .DS_Store
 Thumbs.db
+.verify-tmp/
