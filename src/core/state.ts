@@ -16,6 +16,9 @@
  * - cognitiveBudget: budget de compute alloué pour le cycle actuel
  */
 
+import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { dirname } from 'path';
+
 export type EmotionalTone =
   | 'neutral'
   | 'curious'
@@ -159,6 +162,72 @@ export function workingMemoryToContext(state: CortexState, maxItems = 15): strin
   return sorted.map(wm =>
     `[${wm.type}] ${wm.content} (rel=${wm.relevance.toFixed(2)})`
   ).join('\n');
+}
+
+/**
+ * Sauvegarde l'état sur disque, protegee par un lock file
+ * (evite la corruption si deux instances tournent en meme temps).
+ */
+export function saveCortexState(state: CortexState, path: string): void {
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  // Hard cap sur le budget avant sauvegarde
+  if (state.budgetSpent > state.cognitiveBudget) {
+    state.budgetSpent = state.cognitiveBudget;
+  }
+
+  const lockPath = path + '.lock';
+  if (existsSync(lockPath)) {
+    const lockAge = Date.now() - parseInt(readFileSync(lockPath, 'utf-8'), 10);
+    if (lockAge < 5000) {
+      console.warn('[State] Lock file detecte, ecriture annulee');
+      return;
+    }
+  }
+  writeFileSync(lockPath, String(Date.now()));
+  writeFileSync(path, JSON.stringify(state, null, 2));
+  try { unlinkSync(lockPath); } catch { /* lock deja supprime */ }
+}
+
+/**
+ * Charge l'état depuis le disque. Retourne un état initial si absent
+ * ou corrompu. Le budget cognitif est toujours remis a zero au chargement
+ * (pas d'accumulation inter-sessions).
+ */
+export function loadCortexState(path: string): CortexState {
+  const initial = createInitialState();
+  if (!existsSync(path)) return initial;
+
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const loaded = JSON.parse(raw);
+
+    // Merge profond: les tableaux et objets sont fusionnes, pas ecrases
+    const merged: CortexState = {
+      ...initial,
+      ...loaded,
+      activeHypotheses: loaded.activeHypotheses ?? initial.activeHypotheses,
+      pendingQuestions: loaded.pendingQuestions ?? initial.pendingQuestions,
+      workingMemory: loaded.workingMemory ?? initial.workingMemory,
+      backgroundThreads: loaded.backgroundThreads ?? initial.backgroundThreads,
+      introspectionLog: loaded.introspectionLog ?? initial.introspectionLog,
+      // Budget: reset a chaque demarrage
+      cognitiveBudget: initial.cognitiveBudget,
+      budgetSpent: 0,
+    };
+
+    // Hard cap sur la working memory: pas plus de 50 items au chargement
+    if (merged.workingMemory.length > 50) {
+      merged.workingMemory.sort((a, b) => b.relevance - a.relevance);
+      merged.workingMemory = merged.workingMemory.slice(0, 50);
+    }
+
+    return merged;
+  } catch (err) {
+    console.error('[State] Erreur chargement etat:', err);
+    return initial;
+  }
 }
 
 /**

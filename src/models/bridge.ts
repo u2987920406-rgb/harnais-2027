@@ -276,6 +276,11 @@ export class ModelBridge {
   getBudget(): Budget { return this.budget; }
   getProviders(): ProviderInfo[] { return this.providers; }
 
+  /** Verifie qu'Ollama est en vie. */
+  async ping(): Promise<boolean> {
+    return this.connector.ping();
+  }
+
   stats(): Record<string, any> {
     return {
       callsByMode: Object.fromEntries(this.callCount),

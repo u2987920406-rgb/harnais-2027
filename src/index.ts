@@ -13,6 +13,7 @@
  */
 
 import { Cortex } from './core/cortex.js';
+import type { Skill } from './core/skill.js';
 import { createInterface } from 'readline';
 
 async function main() {
@@ -39,15 +40,14 @@ async function main() {
   // Mode sommeil forcé
   if (args.includes('--sleep')) {
     console.log('Mode sommeil forcé. Lancement de la consolidation profonde...\n');
-    // Access internal consolidation via a trick: inject a sleep trigger
-    await (cortex as any).sleepCycle();
+    await cortex.sleepCycle();
     process.exit(0);
   }
 
   // Mode pensée unique
   if (args.includes('--think')) {
     console.log('Mode pensée unique. Une pensée de fond puis arrêt.\n');
-    await (cortex as any).idleThought();
+    await cortex.idleThought();
     const introspection = await cortex.introspect();
     console.log(introspection);
     await cortex.stop();
@@ -88,18 +88,18 @@ async function main() {
 
     if (input === '/sleep') {
       console.log('\nCycle de sommeil forcé...\n');
-      await (cortex as any).sleepCycle();
+      await cortex.sleepCycle();
       console.log('\nTerminé.\n');
       return;
     }
 
     if (input === '/graph') {
-      console.log('\n' + (cortex as any).graph.toContext(30) + '\n');
+      console.log('\n' + cortex.graph.toContext(30) + '\n');
       return;
     }
 
     if (input === '/nayaos') {
-      const nayaos = (cortex as any).nayaos;
+      const nayaos = cortex.nayaos;
       const alive = await nayaos.ping();
       if (alive) {
         const projects = await nayaos.listProjects();
@@ -114,10 +114,9 @@ async function main() {
     }
 
     if (input === '/skills') {
-      const skills = (cortex as any).skills;
-      const list = skills.list();
+      const list = cortex.skills.list();
       console.log(`\n${list.length} skills charges:`);
-      console.log(list.map((s: any) => `  [${s.tags?.join(',') ?? ''}] ${s.name}`).join('\n'));
+      console.log(list.map((s: Skill) => `  [${s.tags?.join(',') ?? ''}] ${s.name}`).join('\n'));
       console.log('');
       return;
     }

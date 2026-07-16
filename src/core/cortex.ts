@@ -40,8 +40,9 @@ import {
   pushToWorkingMemory,
   workingMemoryToContext,
   stateToSummary,
+  saveCortexState,
+  loadCortexState,
 } from './state.js';
-import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -67,16 +68,23 @@ const DEFAULT_CONFIG: CortexConfig = {
 
 export class Cortex {
   private bridge: ModelBridge;
-  private graph: KnowledgeGraph;
+  private _graph: KnowledgeGraph;
   private spawner: Spawner;
   private tom: TheoryOfMind;
   private consolidation: Consolidation;
   private tools: ToolRegistry;
-  private skills: SkillRegistry;
+  private _skills: SkillRegistry;
   private verifier: ReturnType<typeof makeCompositeVerifier>;
   private workflowEngine: WorkflowEngine;
   private nayaqa: NayaQABridge;
-  private nayaos: NayaOSBridge;
+  private _nayaos: NayaOSBridge;
+
+  /** Acces public en lecture au graphe de connaissance. */
+  get graph(): KnowledgeGraph { return this._graph; }
+  /** Acces public en lecture au registre de skills. */
+  get skills(): SkillRegistry { return this._skills; }
+  /** Acces public en lecture au pont NayaOS. */
+  get nayaos(): NayaOSBridge { return this._nayaos; }
 
   state: CortexState;
   config: CortexConfig;
@@ -91,15 +99,15 @@ export class Cortex {
     config: Partial<CortexConfig> = {}
   ) {
     this.bridge = bridge ?? new ModelBridge();
-    this.graph = graph ?? new KnowledgeGraph();
+    this._graph = graph ?? new KnowledgeGraph();
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.spawner = new Spawner(this.bridge, this.graph);
+    this.spawner = new Spawner(this.bridge, this._graph);
     this.tom = new TheoryOfMind(this.bridge);
-    this.consolidation = new Consolidation(this.bridge, this.graph);
+    this.consolidation = new Consolidation(this.bridge, this._graph);
     this.state = createInitialState();
 
     // Pont NayaOS — cree AVANT les outils car les outils NayaOS en dependent
-    this.nayaos = new NayaOSBridge(this.graph);
+    this._nayaos = new NayaOSBridge(this._graph);
 
     // Enregistre les outils (filesystem + terminal + web + NayaOS)
     this.tools = new ToolRegistry();
@@ -107,16 +115,16 @@ export class Cortex {
       ...createFilesystemTools(),
       ...createTerminalTools(),
       ...createWebTools(),
-      ...createNayaOSTools(this.nayaos),
+      ...createNayaOSTools(this._nayaos),
     ]) {
       this.tools.register(tool);
     }
     this.spawner.setTools(this.tools);
 
     // Charge les skills
-    this.skills = new SkillRegistry();
-    this.skills.load();
-    this.spawner.setSkills(this.skills);
+    this._skills = new SkillRegistry();
+    this._skills.load();
+    this.spawner.setSkills(this._skills);
 
     // Verifier composable (testgen par defaut, sandbox/vision optionnels)
     this.verifier = makeCompositeVerifier({
@@ -127,54 +135,54 @@ export class Cortex {
     });
 
     // Workflow engine pour les taches complexes declarees en graphe
-    this.workflowEngine = new WorkflowEngine(this.bridge, this.tools, this.graph, this.skills);
+    this.workflowEngine = new WorkflowEngine(this.bridge, this.tools, this._graph, this._skills);
 
     // Pont NayaQA — lit les verdicts et enrichit le graphe
-    this.nayaqa = new NayaQABridge(this.graph);
+    this.nayaqa = new NayaQABridge(this._graph);
   }
 
   // --- Lifecycle ---
 
   async init(): Promise<void> {
-    this.graph.load();
+    this._graph.load();
     this.loadState();
     this.mode = 'idle';
 
     // verifie qu'Ollama est en vie
-    const alive = await (this.bridge as any).connector?.ping?.() ?? true;
+    const alive = await this.bridge.ping();
     if (!alive) {
       console.error('[Cortex] Ollama ne repond pas. Demarrage en mode degrade.');
     }
 
     // verifie si NayaOS est en ligne
-    const nayaosAlive = await this.nayaos.ping();
+    const nayaosAlive = await this._nayaos.ping();
     if (nayaosAlive) {
       console.log('[Cortex] NayaOS detecte en ligne.');
-      this.graph.upsertNode('entity', 'NayaOS', { type: 'nayaos', online: true }, 0.9);
+      this._graph.upsertNode('entity', 'NayaOS', { type: 'nayaos', online: true }, 0.9);
     } else {
       console.log('[Cortex] NayaOS hors ligne. Pont disponible en attente.');
     }
 
     console.log('[Cortex] Initialise. Etat:');
     console.log(stateToSummary(this.state));
-    console.log(this.graph.stats());
+    console.log(this._graph.stats());
 
     // Enregistre soi-meme dans le graphe avec UPSERT (pas de doublons)
-    const selfNode = this.graph.upsertNode('entity', 'Harnais-Cortex', {
+    const selfNode = this._graph.upsertNode('entity', 'Harnais-Cortex', {
       type: 'cortex',
       born: this.state.born,
     }, 1.0);
-    const rafNode = this.graph.upsertNode('entity', 'Raf', {
+    const rafNode = this._graph.upsertNode('entity', 'Raf', {
       role: 'owner',
       preferences: 'sovereignty, autonomy, no-claude',
     }, 1.0);
     // ne cree l'arete que si elle n'existe pas deja
-    const existingEdges = this.graph.getEdges(selfNode.id);
+    const existingEdges = this._graph.getEdges(selfNode.id);
     const hasLink = existingEdges.some(e => e.from === rafNode.id || e.to === rafNode.id);
     if (!hasLink) {
-      this.graph.addEdge(selfNode.id, rafNode.id, 'connu', 1.0);
+      this._graph.addEdge(selfNode.id, rafNode.id, 'connu', 1.0);
     }
-    this.graph.save();
+    this._graph.save();
   }
 
   async start(): Promise<void> {
@@ -187,7 +195,7 @@ export class Cortex {
     this.running = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.saveState();
-    this.graph.save();
+    this._graph.save();
     console.log('[Cortex] Arrêté. État sauvegardé.');
   }
 
@@ -210,23 +218,23 @@ export class Cortex {
     console.log(`[Cortex] Ton utilisateur perçu: ${tone}`);
 
     // Enregistre l'input dans le graphe
-    const inputNode = this.graph.addNode('episode', `User: "${input.slice(0, 80)}"`, {
+    const inputNode = this._graph.addNode('episode', `User: "${input.slice(0, 80)}"`, {
       fullText: input,
       timestamp: Date.now(),
     }, 0.8);
-    const rafNode = this.graph.query({ labelContains: 'Raf' })[0];
-    if (rafNode) this.graph.addEdge(rafNode.id, inputNode.id, 'connu', 0.8);
+    const rafNode = this._graph.query({ labelContains: 'Raf' })[0];
+    if (rafNode) this._graph.addEdge(rafNode.id, inputNode.id, 'connu', 0.8);
 
     // Traite l'input
     const response = await this.processInput(input);
 
     // Enregistre la réponse
     pushToWorkingMemory(this.state, response, 'model_output', 0.9);
-    const respNode = this.graph.addNode('episode', `Cortex: "${response.slice(0, 80)}"`, {
+    const respNode = this._graph.addNode('episode', `Cortex: "${response.slice(0, 80)}"`, {
       fullText: response,
       timestamp: Date.now(),
     }, 0.7);
-    this.graph.addEdge(inputNode.id, respNode.id, 'connu', 0.9);
+    this._graph.addEdge(inputNode.id, respNode.id, 'connu', 0.9);
 
     this.mode = 'idle';
     return response;
@@ -235,18 +243,18 @@ export class Cortex {
   // --- Core: process user input with tool-calling loop ---
 
   private async processInput(input: string): Promise<string> {
-    const graphContext = this.graph.toContext(15);
+    const graphContext = this._graph.toContext(15);
     const wmContext = workingMemoryToContext(this.state, 10);
     const stateSummary = stateToSummary(this.state);
     const toolsPrompt = this.tools.toPrompt();
 
     // Charge les skills pertinents: doctrine par defaut + match par texte
-    const doctrineSkills = this.skills.byTags(['doctrine']);
-    const textSkills = this.skills.byText(input).filter(s =>
+    const doctrineSkills = this._skills.byTags(['doctrine']);
+    const textSkills = this._skills.byText(input).filter(s =>
       !doctrineSkills.includes(s) // evite les doublons
     );
     const relevantSkills = [...doctrineSkills, ...textSkills].slice(0, 5);
-    const skillsPrompt = this.skills.toPrompt(relevantSkills);
+    const skillsPrompt = this._skills.toPrompt(relevantSkills);
 
     const systemPrompt = `Tu es le Cortex d'un harnais agentique. Tu n'es pas un chatbot. Tu es un systeme cognitif continu qui pense meme quand l'utilisateur ne parle pas.
 
@@ -312,7 +320,7 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           const result = await this.tools.execute(toolName, toolParams);
           console.log(`[Cortex] Outil ${toolName}: ${result.success ? 'OK' : 'ECHEC'} (${result.durationMs}ms)`);
 
-          this.graph.addNode('episode', `Action: ${toolName}`, {
+          this._graph.addNode('episode', `Action: ${toolName}`, {
             tool: toolName, params: toolParams,
             success: result.success, output: result.output.slice(0, 200),
             timestamp: Date.now(),
@@ -404,7 +412,7 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
       // Sauvegarde périodique
       if (this.state.cycles % 20 === 0) {
         this.saveState();
-        this.graph.save();
+        this._graph.save();
       }
     } catch (err) {
       console.error('[Cortex] Erreur dans tick:', err);
@@ -416,13 +424,13 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
 
   // --- Idle thought (background cognition) ---
 
-  private async idleThought(): Promise<void> {
+  async idleThought(): Promise<void> {
     console.log(`[Cortex] Pensée de fond #${this.state.cycles} (mode: ${this.mode})`);
 
     // Le cortex réfléchit en arrière-plan.
     // Il peut: explorer une hypothèse, anticiper une question, consolider un souvenir.
 
-    const graphContext = this.graph.toContext(10);
+    const graphContext = this._graph.toContext(10);
     const wmContext = workingMemoryToContext(this.state, 5);
     const stateSummary = stateToSummary(this.state);
 
@@ -478,7 +486,7 @@ Réponds en JSON: {"thought": "...", "type": "hypothesis|anticipation|pattern|ob
             await this.consolidation.consolidate(this.state);
             break;
           case 'note':
-            this.graph.addNode('episode', thought.thought, {
+            this._graph.addNode('episode', thought.thought, {
               type: 'idle_thought',
               timestamp: Date.now(),
             }, 0.4);
@@ -492,7 +500,7 @@ Réponds en JSON: {"thought": "...", "type": "hypothesis|anticipation|pattern|ob
 
   // --- Sleep cycle (deep consolidation) ---
 
-  private async sleepCycle(): Promise<void> {
+  async sleepCycle(): Promise<void> {
     console.log(`[Cortex] === CYCLE DE SOMMEIL #${Math.floor(this.state.cycles / this.config.sleepInterval)} ===`);
     this.mode = 'sleep';
     await this.consolidation.deepConsolidate(this.state);
@@ -540,69 +548,19 @@ Réponds en JSON: {"thought": "...", "type": "hypothesis|anticipation|pattern|ob
   }
 
   private loadState(): void {
-    if (!existsSync(this.config.statePath)) return;
-    try {
-      const raw = readFileSync(this.config.statePath, 'utf-8');
-      const loaded = JSON.parse(raw);
-      const initial = createInitialState();
-
-      // Merge profond: les tableaux et objets sont fusionnes, pas ecrases
-      this.state = {
-        ...initial,
-        ...loaded,
-        // Tableaux: on garde les charges, pas les vides initiaux
-        activeHypotheses: loaded.activeHypotheses ?? initial.activeHypotheses,
-        pendingQuestions: loaded.pendingQuestions ?? initial.pendingQuestions,
-        workingMemory: loaded.workingMemory ?? initial.workingMemory,
-        backgroundThreads: loaded.backgroundThreads ?? initial.backgroundThreads,
-        introspectionLog: loaded.introspectionLog ?? initial.introspectionLog,
-        // Budget: reset a chaque demarrage (pas d'accumulation inter-sessions)
-        cognitiveBudget: initial.cognitiveBudget,
-        budgetSpent: 0,
-      };
-
-      // Hard cap sur la working memory: pas plus de 50 items au chargement
-      if (this.state.workingMemory.length > 50) {
-        this.state.workingMemory.sort((a, b) => b.relevance - a.relevance);
-        this.state.workingMemory = this.state.workingMemory.slice(0, 50);
-      }
-
-      console.log(`[Cortex] Etat charge: cycle ${this.state.cycles}, ${this.state.workingMemory.length} items en WM`);
-    } catch (err) {
-      console.error('[Cortex] Erreur chargement etat:', err);
-    }
+    this.state = loadCortexState(this.config.statePath);
+    console.log(`[Cortex] Etat charge: cycle ${this.state.cycles}, ${this.state.workingMemory.length} items en WM`);
   }
 
   private saveState(): void {
-    const dir = dirname(this.config.statePath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    // Hard cap sur le budget avant sauvegarde
-    if (this.state.budgetSpent > this.state.cognitiveBudget) {
-      this.state.budgetSpent = this.state.cognitiveBudget;
-    }
-
-    // Lock file: empeche la corruption si deux instances tournent
-    const lockPath = this.config.statePath + '.lock';
-    if (existsSync(lockPath)) {
-      const lockAge = Date.now() - parseInt(readFileSync(lockPath, 'utf-8'));
-      if (lockAge < 5000) {
-        console.warn('[Cortex] Lock file detecte, ecriture annulee');
-        return;
-      }
-    }
-    writeFileSync(lockPath, String(Date.now()));
-    writeFileSync(this.config.statePath, JSON.stringify(this.state, null, 2));
-
-    // Supprime le lock
-    try { unlinkSync(lockPath); } catch { /* lock deja supprime */ }
+    saveCortexState(this.state, this.config.statePath);
   }
 
   // --- Introspection (for debugging / meta-cognition) ---
 
   async introspect(): Promise<string> {
     const summary = stateToSummary(this.state);
-    const graphStats = this.graph.stats();
+    const graphStats = this._graph.stats();
     const bridgeStats = this.bridge.stats();
 
     return `=== INTROSPECTION CORTEX ===

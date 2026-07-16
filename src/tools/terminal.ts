@@ -5,39 +5,42 @@
  * Timeout configurable. Output tronqué si trop long.
  */
 
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { Tool, ToolResult } from './registry.js';
+
+const execAsync = promisify(exec);
 
 async function run(params: Record<string, any>): Promise<ToolResult> {
   const start = Date.now();
-  try {
-    const command = params.command as string;
-    const timeout = (params.timeout as number) ?? 10000;
-    const cwd = params.cwd as string | undefined;
+  const command = params.command as string;
+  const timeout = (params.timeout as number) ?? 10000;
+  const cwd = params.cwd as string | undefined;
 
-    const output = execSync(command, {
+  try {
+    const { stdout } = await execAsync(command, {
       timeout,
       maxBuffer: 1024 * 1024,
       encoding: 'utf-8',
       cwd: cwd ?? process.cwd(),
-      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const truncated = output.length > 4000;
+    const truncated = stdout.length > 4000;
     return {
       success: true,
-      output: truncated ? output.slice(0, 4000) + '\n...[tronqué]' : output,
+      output: truncated ? stdout.slice(0, 4000) + '\n...[tronqué]' : stdout,
       data: { command, exitCode: 0, truncated },
       durationMs: Date.now() - start,
     };
   } catch (err: any) {
     const stdout = err.stdout ?? '';
     const stderr = err.stderr ?? err.message;
+    const timedOut = err.killed && err.signal === 'SIGTERM';
     return {
       success: false,
       output: stdout.slice(0, 2000) + '\n[stderr] ' + stderr.slice(0, 2000),
-      error: `exit ${err.status ?? '?'}`,
-      data: { command: params.command, exitCode: err.status },
+      error: timedOut ? `timeout apres ${timeout}ms` : `exit ${err.code ?? '?'}`,
+      data: { command, exitCode: err.code, timedOut },
       durationMs: Date.now() - start,
     };
   }
