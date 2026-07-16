@@ -10,6 +10,8 @@
     "dev": "tsx src/index.ts",
     "think": "tsx src/index.ts --think",
     "sleep": "tsx src/index.ts --sleep",
+    "ui": "tsx src/index.ts --ui",
+    "ui:dev": "tsx src/index.ts --ui 7891",
     "test": "tsx --test test/*.test.ts",
     "smoke": "tsx test/live/ollama.smoke.ts",
     "smoke:workflow": "tsx test/live/workflow.smoke.ts",

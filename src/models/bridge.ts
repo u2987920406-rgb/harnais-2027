@@ -13,6 +13,7 @@
  */
 
 import { OllamaConnector, type ModelResponse, type ModelRequest } from './ollama.js';
+import { NousPortalConnector } from './nous-portal.js';
 import {
   type Capability, type ProviderInfo,
   selectWithFallback,
@@ -40,11 +41,11 @@ export interface BridgeConfig {
 
 const DEFAULT_CONFIG: BridgeConfig = {
   reasoningModel: 'qwythos-tools:q6',
-  creativeModel: 'glm-5.2:cloud',
-  generalModel: 'glm-5.2:cloud',
+  creativeModel: 'tencent/hy3:free',
+  generalModel: 'tencent/hy3:free',
   visionModel: 'qwen3-vl:8b',
   metaModel: 'qwythos-tools:q6',
-  consolidationModel: 'qwen3.5:cloud',
+  consolidationModel: 'tencent/hy3:free',
   critiqueModel: 'qwythos-tools:q6',
   allowCloud: true,
   strategy: 'single',
@@ -53,6 +54,7 @@ const DEFAULT_CONFIG: BridgeConfig = {
 
 export class ModelBridge {
   private connector: OllamaConnector;
+  private nous: NousPortalConnector;
   private config: BridgeConfig;
   private providers: ProviderInfo[];
   private budget: Budget;
@@ -61,6 +63,7 @@ export class ModelBridge {
 
   constructor(config: Partial<BridgeConfig> = {}) {
     this.connector = new OllamaConnector();
+    this.nous = new NousPortalConnector('tencent/hy3:free');
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.budget = makeBudget(20, 500_000, 500_000);
 
@@ -71,13 +74,16 @@ export class ModelBridge {
         tiers: { reasoning: 2, meta: 3, critique: 2 } as Record<string, number> },
       { id: 'glm', label: 'GLM 5.2 cloud', model: this.config.generalModel, isLocal: false,
         caps: ['general', 'creative', 'reasoning', 'critique'] as Capability[],
-        tiers: { general: 1, creative: 2, reasoning: 2, critique: 2 } as Record<string, number> },
+        tiers: { general: 3, creative: 3, reasoning: 3, critique: 3 } as Record<string, number> },
       { id: 'qwen', label: 'Qwen 3.5 cloud', model: this.config.consolidationModel, isLocal: false,
         caps: ['consolidation', 'general'] as Capability[],
-        tiers: { consolidation: 1, general: 1 } as Record<string, number> },
+        tiers: { consolidation: 3, general: 3 } as Record<string, number> },
       { id: 'qwen-vl', label: 'Qwen3 VL local', model: this.config.visionModel, isLocal: true,
         caps: ['vision'] as Capability[],
         tiers: { vision: 2 } as Record<string, number> },
+      { id: 'hy3', label: 'Hunyuan hy3:free (Nous)', model: 'tencent/hy3:free', isLocal: false,
+        caps: ['general', 'creative', 'reasoning', 'critique'] as Capability[],
+        tiers: { general: 1, creative: 2, reasoning: 2, critique: 2 } as Record<string, number> },
     ];
 
     this.providers = all.map(p => ({
@@ -137,6 +143,18 @@ export class ModelBridge {
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens ?? 2048,
     };
+
+    // Route vers Nous Portal si le modele est heberge sur l'infra Nous (hy3/hunyuan)
+    if (NousPortalConnector.handles(model)) {
+      const t0 = Date.now();
+      const response = await this.nous.generate(request);
+      const elapsed = Date.now() - t0;
+      charge(this.budget, response.evalCount ?? 100, response.tokensGenerated ?? 100);
+      this.callCount.set(mode, (this.callCount.get(mode) ?? 0) + 1);
+      this.totalTokens += response.tokensGenerated ?? 0;
+      console.log(`[Bridge] ${mode} -> ${model} (NousPortal, ${elapsed}ms, ~${response.tokensGenerated ?? '?'} tok)`);
+      return response;
+    }
 
     const t0 = Date.now();
     const response = await this.connector.generate(request);
@@ -265,6 +283,15 @@ export class ModelBridge {
     options: { system?: string; temperature?: number; modelOverride?: string } = {}
   ): AsyncGenerator<string> {
     const model = options.modelOverride ?? this.selectModel(mode);
+    if (NousPortalConnector.handles(model)) {
+      yield* this.nous.generateStream({
+        model,
+        prompt,
+        system: options.system,
+        temperature: options.temperature ?? 0.7,
+      });
+      return;
+    }
     yield* this.connector.generateStream({
       model,
       prompt,

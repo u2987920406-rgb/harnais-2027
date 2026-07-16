@@ -37,6 +37,25 @@ async function main() {
     process.exit(0);
   }
 
+  // Mode UI (dashboard web) — démarre le serveur et reste en vie
+  if (args.includes('--ui')) {
+    const portIdx = args.indexOf('--ui');
+    const portArg = args[portIdx + 1];
+    const port = portArg && !portArg.startsWith('-') ? parseInt(portArg, 10) : 7891;
+    const url = await cortex.startUI(port);
+    console.log(`\n  Dashboard UI: ${url}\n  Ctrl+C pour arrêter.\n`);
+
+    // Garde le process en vie — le serveur tourne jusqu'à SIGINT
+    process.on('SIGINT', async () => {
+      console.log('\nArrêt du dashboard...');
+      await cortex.stop();
+      process.exit(0);
+    });
+    // Empêche le process de quitter
+    setInterval(() => {}, 1 << 30);
+    return;
+  }
+
   // Mode sommeil forcé
   if (args.includes('--sleep')) {
     console.log('Mode sommeil forcé. Lancement de la consolidation profonde...\n');
@@ -67,6 +86,7 @@ async function main() {
   console.log("  /sleep       -- forcer un cycle de sommeil");
   console.log("  /graph       -- voir le graphe de connaissance");
   console.log("  /skills      -- lister les skills charges");
+  console.log("  /ui          -- demarrer le dashboard web (http://127.0.0.1:7891)");
   console.log("  /nayaos      -- verifier l'etat de NayaOS");
   console.log("  /quit        -- arreter\n");
 
@@ -118,6 +138,12 @@ async function main() {
       console.log(`\n${list.length} skills charges:`);
       console.log(list.map((s: Skill) => `  [${s.tags?.join(',') ?? ''}] ${s.name}`).join('\n'));
       console.log('');
+      return;
+    }
+
+    if (input === '/ui') {
+      const url = await cortex.startUI();
+      console.log(`\n  Dashboard UI: ${url}\n`);
       return;
     }
 

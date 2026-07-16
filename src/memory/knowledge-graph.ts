@@ -378,4 +378,14 @@ export class KnowledgeGraph {
   stats(): { nodes: number; edges: number; version: number } {
     return { nodes: this.nodes.size, edges: this.edges.size, version: this.version };
   }
+
+  /** Retourne tous les nœuds (pour la visualisation UI). */
+  allNodes(): GraphNode[] {
+    return Array.from(this.nodes.values());
+  }
+
+  /** Retourne toutes les arêtes (pour la visualisation UI). */
+  allEdges(): GraphEdge[] {
+    return Array.from(this.edges.values());
+  }
 }

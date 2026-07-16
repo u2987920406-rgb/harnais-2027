@@ -18,7 +18,7 @@
  *   6. Consolider — faire de la place, dégrader le bruit
  */
 
-import { ModelBridge } from '../models/bridge.js';
+import { ModelBridge, type GenStrategy } from '../models/bridge.js';
 import { KnowledgeGraph } from '../memory/knowledge-graph.js';
 import { Spawner } from '../cognition/spawner.js';
 import { TheoryOfMind } from '../cognition/theory-of-mind.js';
@@ -34,8 +34,10 @@ import { makeCompositeVerifier, type Artifact } from '../verify/verifier.js';
 import { WorkflowEngine, formatTrace, type WorkflowDef } from './workflow.js';
 import { NayaQABridge } from '../bridge/nayaqa.js';
 import { NayaOSBridge } from '../bridge/nayaos.js';
+import { UIServer } from '../ui/server.js';
 import {
   CortexState,
+  type BackgroundThread,
   createInitialState,
   pushToWorkingMemory,
   workingMemoryToContext,
@@ -78,6 +80,7 @@ export class Cortex {
   private workflowEngine: WorkflowEngine;
   private nayaqa: NayaQABridge;
   private _nayaos: NayaOSBridge;
+  private _ui: UIServer | null = null;
 
   /** Acces public en lecture au graphe de connaissance. */
   get graph(): KnowledgeGraph { return this._graph; }
@@ -85,6 +88,13 @@ export class Cortex {
   get skills(): SkillRegistry { return this._skills; }
   /** Acces public en lecture au pont NayaOS. */
   get nayaos(): NayaOSBridge { return this._nayaos; }
+
+  /** Demarre le serveur UI (dashboard web). */
+  async startUI(port = 7891, host = '127.0.0.1'): Promise<string> {
+    this._ui = new UIServer(this, { port, host });
+    await this._ui.start();
+    return this._ui.url;
+  }
 
   state: CortexState;
   config: CortexConfig;
@@ -145,7 +155,7 @@ export class Cortex {
 
   async init(): Promise<void> {
     this._graph.load();
-    this.loadState();
+    await this.loadState();   // IMPORTANT: attendre le chargement de l'état (sinon race avec l'UI)
     this.mode = 'idle';
 
     // verifie qu'Ollama est en vie
@@ -194,6 +204,7 @@ export class Cortex {
   async stop(): Promise<void> {
     this.running = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this._ui) await this._ui.stop();
     this.saveState();
     this._graph.save();
     console.log('[Cortex] Arrêté. État sauvegardé.');
@@ -240,7 +251,76 @@ export class Cortex {
     return response;
   }
 
-  // --- Core: process user input with tool-calling loop ---
+  // --- Core: process user input with planning + tool-calling loop ---
+
+  /**
+   * Detecte si une tache est complexe (multi-etapes, decomposition beneficial).
+   * Heuristique: longueur, mots-cles de tache complexe, demande explicite.
+   */
+  private isComplexTask(input: string): boolean {
+    const complexSignals = [
+      /\b(analyse|compare|refactor|restructure|planifie|orchestre|build|construis|implemente|migr|integre)\b/i,
+      /\b(etapes?|etapes?|phases?|modules?|composants?)\b/i,
+      /\b(d['e]abord|puis|ensuite|enfin|parallèle|séquence)\b/i,
+    ];
+    const signalCount = complexSignals.filter(re => re.test(input)).length;
+    return input.length > 150 || signalCount >= 2;
+  }
+
+  /**
+   * Phase PLAN: decompose la tache en sous-processus via le spawner,
+   * puis execute en pipeline ou parallele selon les dependances.
+   */
+  private async planAndExecute(input: string, systemPrompt: string): Promise<string | null> {
+    if (!this.isComplexTask(input)) return null;
+
+    console.log('[Cortex] Tache complexe detectee — decomposition...');
+    const configs = await this.spawner.planDecomposition(input, workingMemoryToContext(this.state, 5));
+
+    if (configs.length <= 1) return null; // pas besoin de decomposer
+
+    console.log(`[Cortex] ${configs.length} sous-processus planifies: ${configs.map(c => c.role).join(', ')}`);
+
+    // Detecte les dependances: si les roles sont sequentiels (architecte -> codeur -> critique),
+    // on fait un pipeline. Sinon, parallele.
+    const pipelineKeywords = ['architecte', 'plan', 'codeur', 'critique', 'verifie', 'test'];
+    const isPipeline = configs.every((c, i) =>
+      i === 0 || pipelineKeywords.some(kw => c.role.toLowerCase().includes(kw))
+    );
+
+    const results = isPipeline
+      ? await this.spawner.spawnPipeline(configs)
+      : await this.spawner.spawnParallel(configs);
+
+    // Synthese: combine les resultats des sous-agents
+    const successResults = results.filter(r => r.success);
+    if (successResults.length === 0) return null;
+
+    // Enregistre chaque resultat dans le graphe
+    for (const r of successResults) {
+      pushToWorkingMemory(this.state, `[${r.role}] ${r.output.slice(0, 200)}`, 'decision', 0.8);
+    }
+
+    // Demande au cortex de synthetiser les resultats
+    const synthesisPrompt = `Tu es le Cortex. ${successResults.length} sous-agents ont travaille sur la tache.
+Synthetise leurs resultats en une reponse coherente pour l'utilisateur.
+
+Tache originale: ${input}
+
+Resultats des sous-agents:
+${successResults.map(r => `--- ${r.role} ---\n${r.output.slice(0, 1000)}`).join('\n\n')}
+
+Reponds en francais. Sois direct et synthetique.`;
+
+    const synthResponse = await this.bridge.think(synthesisPrompt, 'general', {
+      system: systemPrompt,
+      temperature: 0.5,
+      maxTokens: 2048,
+    });
+    this.state.budgetSpent += synthResponse.tokensGenerated ?? 0;
+
+    return synthResponse.text;
+  }
 
   private async processInput(input: string): Promise<string> {
     const graphContext = this._graph.toContext(15);
@@ -256,6 +336,10 @@ export class Cortex {
     const relevantSkills = [...doctrineSkills, ...textSkills].slice(0, 5);
     const skillsPrompt = this._skills.toPrompt(relevantSkills);
 
+    // Calibration TOM: ajuste temperature/maxTokens/style selon le profil utilisateur
+    const tomCalibration = this.tom.calibrateResponse();
+    const tomContext = this.tom.toContext();
+
     const systemPrompt = `Tu es le Cortex d'un harnais agentique. Tu n'es pas un chatbot. Tu es un systeme cognitif continu qui pense meme quand l'utilisateur ne parle pas.
 
 Tu as acces a:
@@ -267,6 +351,9 @@ ${wmContext}
 
 - Ton etat interne:
 ${stateSummary}
+
+- Ton modele de l'utilisateur:
+${tomContext}
 
 - Tes outils:
 ${toolsPrompt}
@@ -281,7 +368,21 @@ Si tu n'as pas besoin d'outil, reponds normalement en francais.
 Apres chaque appel d'outil, tu recevras le resultat et pourras continuer.
 Tu peux faire jusqu'a 5 appels d'outils consecutifs avant de donner ta reponse finale.
 
+Style de reponse: ${tomCalibration.style}.
 Reponds en francais. Sois direct, profond, pas verbeux.`;
+
+    // Phase PLAN: si la tache est complexe, decompose et execute via le spawner
+    const planResult = await this.planAndExecute(input, systemPrompt);
+    if (planResult) {
+      this.state.selfModifications++; // le cortex s'est reconfigure pour cette tache
+      return planResult;
+    }
+
+    // Phase ACT: boucle de tool-calling standard
+    // Strategie: debate pour les decisions importantes, self-consistency pour le raisonnement
+    const isCritical = /\b(important|critique|decision|choix|strategie|architecture)\b/i.test(input);
+    const isReasoning = /\b(pourquoi|analyse|compare|deduis|infer|raisonne)\b/i.test(input);
+    const strategy: GenStrategy = isCritical ? 'debate' : isReasoning ? 'selfconsistency' : 'single';
 
     // Boucle de tool-calling: observe -> decide -> act -> observe resultat -> repeat
     let conversation = input;
@@ -289,11 +390,18 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
     const maxRounds = 5;
 
     for (let round = 0; round < maxRounds; round++) {
-      const response = await this.bridge.think(conversation, 'general', {
-        system: systemPrompt,
-        temperature: 0.7,
-        maxTokens: 2048,
-      });
+      const response = isCritical && round === 0
+        ? await this.bridge.thinkDebate(conversation, 'general', {
+            system: systemPrompt,
+            temperature: tomCalibration.temperature,
+            maxTokens: tomCalibration.maxTokens,
+          })
+        : await this.bridge.think(conversation, 'general', {
+            system: systemPrompt,
+            temperature: tomCalibration.temperature,
+            maxTokens: tomCalibration.maxTokens,
+            strategy: round === 0 ? strategy : 'single',
+          });
 
       this.state.budgetSpent += response.tokensGenerated ?? 0;
       const text = response.text.trim();
@@ -427,6 +535,18 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
   async idleThought(): Promise<void> {
     console.log(`[Cortex] Pensée de fond #${this.state.cycles} (mode: ${this.mode})`);
 
+    // D'abord, avance les background threads existants (cognition parallele reelle)
+    for (const thread of this.state.backgroundThreads) {
+      if (thread.iterations >= 5) continue; // un thread ne vit que 5 iterations
+      await this.advanceBackgroundThread(thread);
+    }
+    // Nettoie les threads termines
+    const before = this.state.backgroundThreads.length;
+    this.state.backgroundThreads = this.state.backgroundThreads.filter(t => t.iterations < 5);
+    if (this.state.backgroundThreads.length < before) {
+      console.log(`[Cortex] ${before - this.state.backgroundThreads.length} fil(s) de pensée terminé(s)`);
+    }
+
     // Le cortex réfléchit en arrière-plan.
     // Il peut: explorer une hypothèse, anticiper une question, consolider un souvenir.
 
@@ -508,6 +628,43 @@ Réponds en JSON: {"thought": "...", "type": "hypothesis|anticipation|pattern|ob
   }
 
   // --- Background threads ---
+
+  /**
+   * Avance un fil de pensée d'une iteration.
+   * Le thread reflichit sur son topic et produit une idee nouvelle.
+   */
+  private async advanceBackgroundThread(thread: BackgroundThread): Promise<void> {
+    const prompt = `Tu es un fil de pensée arrière-plan d'un cortex cognitif.
+Topic: ${thread.topic}
+Pensée précédente: ${thread.thought}
+
+Produis la prochaine itération de ta réflexion. Sois concis (max 3 phrases).
+Réponds en texte brut, pas de JSON.`;
+
+    try {
+      const response = await this.bridge.think(prompt, 'meta', {
+        temperature: 0.7,
+        maxTokens: 256,
+      });
+      thread.thought = response.text.trim().slice(0, 500);
+      thread.iterations++;
+      thread.lastUpdate = Date.now();
+      this.state.budgetSpent += response.tokensGenerated ?? 0;
+
+      // Enregistre l'iteration dans le graphe
+      this._graph.addNode('episode', `Thread[${thread.topic.slice(0, 30)}] #${thread.iterations}`, {
+        thought: thread.thought,
+        topic: thread.topic,
+        iteration: thread.iterations,
+        timestamp: Date.now(),
+      }, 0.3 + thread.priority * 0.2);
+
+      console.log(`[Cortex] Thread "${thread.topic.slice(0, 40)}" iter ${thread.iterations}/5`);
+    } catch (err) {
+      console.error(`[Cortex] Thread "${thread.topic}" erreur:`, err);
+      thread.iterations++; // avance meme en cas d'erreur pour eviter le blocage
+    }
+  }
 
   private spawnBackgroundThread(topic: string): void {
     if (this.state.backgroundThreads.length >= this.config.maxBackgroundThreads) {
