@@ -10,7 +10,8 @@
     "dev": "tsx src/index.ts",
     "think": "tsx src/index.ts --think",
     "sleep": "tsx src/index.ts --sleep",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "smoke": "tsx test/live/ollama.smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
