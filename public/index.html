@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atlas — Harnais 2027</title>
+  <style>
+    :root { --bg:#0d1117; --panel:#161b22; --accent:#7CFC00; --text:#e6edf3; --muted:#8b949e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:12px 16px; border-bottom:1px solid #30363d; display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:16px; margin:0; }
+    .badge { font-size:12px; color:var(--accent); border:1px solid var(--accent); border-radius:6px; padding:2px 8px; }
+    .layout { display:grid; grid-template-columns: 1fr 320px; height: calc(100vh - 49px); }
+    .chat { display:flex; flex-direction:column; padding:16px; gap:12px; overflow-y:auto; }
+    .msg { padding:10px 12px; border-radius:10px; max-width:80%; }
+    .msg.user { background:#1f6feb22; align-self:flex-end; border:1px solid #1f6feb55; }
+    .msg.cortex { background:var(--panel); align-self:flex-start; border:1px solid #30363d; }
+    .side { border-left:1px solid #30363d; padding:16px; overflow-y:auto; font-size:13px; }
+    .metric { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #21262d; }
+    .metric span:last-child { color:var(--accent); }
+    form { display:flex; gap:8px; padding:12px 16px; border-top:1px solid #30363d; }
+    input { flex:1; background:var(--panel); border:1px solid #30363d; color:var(--text); padding:10px; border-radius:8px; }
+    button { background:var(--accent); color:#000; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; }
+    .wm { font-size:11px; color:var(--muted); margin-top:4px; padding-left:4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧠 Atlas</h1>
+    <span class="badge">SOUVERAIN · Ollama local</span>
+    <span id="mode" class="badge">mode: …</span>
+  </header>
+  <div class="layout">
+    <div>
+      <div id="chat" class="chat"></div>
+      <form id="form">
+        <input id="input" placeholder="Parle à Atlas…" autocomplete="off" />
+        <button type="submit">Envoyer</button>
+      </form>
+    </div>
+    <div class="side">
+      <h3>État du cortex</h3>
+      <div class="metric"><span>Cycles</span><span id="m-cycles">–</span></div>
+      <div class="metric"><span>Ton utilisateur</span><span id="m-tone">–</span></div>
+      <div class="metric"><span>Engagement</span><span id="m-engagement">–</span></div>
+      <div class="metric"><span>Mémoire travail</span><span id="m-wm">–</span></div>
+      <div class="metric"><span>Hypothèses</span><span id="m-hyp">–</span></div>
+      <div class="metric"><span>Fils arrière-plan</span><span id="m-threads">–</span></div>
+      <div class="metric"><span>Graphe (nœuds)</span><span id="m-nodes">–</span></div>
+      <div class="metric"><span>Graphe (arêtes)</span><span id="m-edges">–</span></div>
+      <h3>Mémoire de travail</h3>
+      <div id="wm-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+
+    function addMsg(role, text) {
+      const d = document.createElement('div');
+      d.className = 'msg ' + role;
+      d.textContent = text;
+      chat.appendChild(d);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function refreshState() {
+      try {
+        const r = await fetch('/api/state');
+        const s = await r.json();
+        document.getElementById('mode').textContent = 'mode: ' + s.mode;
+        document.getElementById('m-cycles').textContent = s.cycles;
+        document.getElementById('m-tone').textContent = s.userTone;
+        document.getElementById('m-engagement').textContent = s.userEngagement?.toFixed(2);
+        document.getElementById('m-wm').textContent = s.workingMemorySize;
+        document.getElementById('m-hyp').textContent = s.activeHypotheses;
+        document.getElementById('m-threads').textContent = s.backgroundThreads;
+        document.getElementById('m-nodes').textContent = s.graph?.nodes ?? 0;
+        document.getElementById('m-edges').textContent = s.graph?.edges ?? 0;
+        const wm = document.getElementById('wm-list');
+        wm.innerHTML = '';
+        (s.workingMemory || []).forEach(w => {
+          const d = document.createElement('div');
+          d.className = 'wm';
+          d.textContent = '• [' + w.type + '] ' + w.content;
+          wm.appendChild(d);
+        });
+      } catch (e) { /* silence */ }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = input.value.trim();
+      if (!msg) return;
+      addMsg('user', msg);
+      input.value = '';
+      const res = await fetch('/api/inject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      const data = await res.json();
+      addMsg('cortex', data.response ?? '…');
+      refreshState();
+    });
+
+    refreshState();
+    setInterval(refreshState, 5000);
+  </script>
+</body>
+</html>
