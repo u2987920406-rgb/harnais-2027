@@ -26,12 +26,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
 const PORT = Number(process.env.HARNAIS_UI_PORT ?? 8080);
 
-// --- Instancie le Cortex en mode souverain (Ollama local) ---
-// generalModel force sur qwythos local pour ne jamais appeler le cloud.
+// --- Instancie le Cortex: hy3:free (Nous, gratuit) en modele general par defaut,
+//     qwythos local en fallback pour le raisonnement/meta si le cloud rate-limite. ---
 const bridge = new ModelBridge({
-  generalModel: process.env.HARNAIS_GENERAL_MODEL ?? 'qwythos-tools:q6',
-  consolidationModel: process.env.HARNAIS_GENERAL_MODEL ?? 'qwythos-tools:q6',
-  allowCloud: false, // souverain: aucun appel cloud
+  generalModel: 'tencent/hy3:free',
+  consolidationModel: 'tencent/hy3:free',
+  reasoningModel: 'qwythos-tools:q6', // local, pour le raisonnement profond
+  metaModel: 'qwythos-tools:q6',
+  critiqueModel: 'qwythos-tools:q6',
+  allowCloud: true, // hy3:free passe par Nous Portal (gratuit)
 });
 const graph = new KnowledgeGraph();
 const cortex = new Cortex(bridge, graph, { tickIntervalMs: 999999 });
@@ -138,5 +141,5 @@ const server = createServer(async (req: any, res: any) => {
 
 server.listen(PORT, () => {
   console.log(`[UI] Harnais 2027 (Atlas) sur http://localhost:${PORT}`);
-  console.log(`[UI] Mode souverain: ${bridge.stats()?.generalModel ?? 'qwythos local'} (cloud desactive)`);
+  console.log(`[UI] Modele general: hy3:free (Nous Portal, gratuit) | raisonnement: qwythos local`);
 });
