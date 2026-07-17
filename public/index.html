@@ -97,13 +97,38 @@
       if (!msg) return;
       addMsg('user', msg);
       input.value = '';
-      const res = await fetch('/api/inject', {
+
+      // Affichage progressif via SSE (hy3 stream)
+      const cortexMsg = document.createElement('div');
+      cortexMsg.className = 'msg cortex';
+      cortexMsg.textContent = '…';
+      chat.appendChild(cortexMsg);
+      chat.scrollTop = chat.scrollHeight;
+
+      const resp = await fetch('/api/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: msg }),
       });
-      const data = await res.json();
-      addMsg('cortex', data.response ?? '…');
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let acc = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith('data:')) continue;
+          const payload = t.slice(5).trim();
+          try { acc += JSON.parse(payload); cortexMsg.textContent = acc; chat.scrollTop = chat.scrollHeight; }
+          catch { /* meta/done/error */ }
+        }
+      }
+      if (!acc) cortexMsg.textContent = '(pas de reponse en streaming — voir /api/inject)';
       refreshState();
     });
 

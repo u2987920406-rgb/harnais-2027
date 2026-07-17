@@ -112,7 +112,33 @@ const server = createServer(async (req: any, res: any) => {
       }
     }
 
-    // --- API: stats du graphe ---
+    // --- API: stream SSE (apercu live du raisonnement via hy3, sans tool-calling) ---
+    // Complement a /api/inject: affiche les tokens au fil de l'eau pour la fluidite.
+    if (path === '/api/stream' && req.method === 'POST') {
+      const raw = await readBody(req);
+      let message = '';
+      try { message = JSON.parse(raw).message ?? ''; } catch { message = raw; }
+      if (!message.trim()) return sendJson(res, 400, { error: 'message vide' });
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.write(`event: meta\ndata: ${JSON.stringify({ mode: cortex.mode, model: 'hy3:free' })}\n\n`);
+
+      const ctx = cortex.graph.toContext(10);
+      const prompt = `[Contexte graphe]\n${ctx}\n\n[Message utilisateur]\n${message}\n\nReponds en francais.`;
+      try {
+        for await (const token of bridge.thinkStream(prompt, 'general')) {
+          res.write(`data: ${JSON.stringify(token)}\n\n`);
+        }
+        res.write('event: done\ndata: {}\n\n');
+      } catch (e: any) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: e?.message ?? 'echec stream' })}\n\n`);
+      }
+      return res.end();
+    }
     if (path === '/api/graph' && req.method === 'GET') {
       return sendJson(res, 200, cortex.graph.stats());
     }
