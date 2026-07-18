@@ -39,7 +39,7 @@ async function run(
     return {
       success: true,
       output: truncated ? stdout.slice(0, 4000) + '\n...[tronqué]' : stdout,
-      data: { command, exitCode: 0, truncated },
+      data: { command: effectiveCommand, exitCode: 0, truncated },
       durationMs: Date.now() - start,
     };
   } catch (err: any) {
@@ -50,13 +50,15 @@ async function run(
       success: false,
       output: stdout.slice(0, 2000) + '\n[stderr] ' + stderr.slice(0, 2000),
       error: timedOut ? `timeout apres ${timeout}ms` : `exit ${err.code ?? '?'}`,
-      data: { command, exitCode: err.code, timedOut },
+      data: { command: effectiveCommand, exitCode: err.code, timedOut },
       durationMs: Date.now() - start,
     };
   }
 }
 
-export function createTerminalTools(): Tool[] {
+export function createTerminalTools(
+  strategy: SandboxStrategy = 'none'
+): Tool[] {
   return [
     {
       name: 'shell_exec',
@@ -67,7 +69,7 @@ export function createTerminalTools(): Tool[] {
         { name: 'timeout', type: 'number', description: 'Timeout en ms (défaut: 10000)', required: false, default: 10000 },
         { name: 'cwd', type: 'string', description: 'Répertoire de travail', required: false },
       ],
-      execute: run,
+      execute: (params) => run(params, strategy),
     },
   ];
 }
