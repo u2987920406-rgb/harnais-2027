@@ -18,21 +18,33 @@ import { createInterface } from 'readline';
 import { join } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { imageToAnsi } from './tools/image-ansi.js';
 const execAsync = promisify(exec);
+
+// Banniere Atlas (logo pixel art en ANSI truecolor) si le terminal supporte
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+function printBanner(): void {
+  const logo = join(__dirname, '..', 'assets', 'atlas-logo.png');
+  if (existsSync(logo) && process.stdout.isTTY) {
+    try { console.log(imageToAnsi(logo, 64) + '\n'); return; } catch { /* ignore */ }
+  }
+  // Fallback texte
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════╗');
+  console.log('║         HARNAIS 2027 — CORTEX ACTIF              ║');
+  console.log('╚══════════════════════════════════════════════════╝');
+  console.log('');
+}
 
 async function main() {
   const args = process.argv.slice(2);
   const cortex = new Cortex();
 
   await cortex.init();
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════╗');
-  console.log('║         HARNAIS 2027 — CORTEX ACTIF              ║');
-  console.log('║                                                  ║');
-  console.log('║  Cognition continue. Graphe de connaissance.     ║');
-  console.log('║  Émergence. Consolidation. Zéro Claude.          ║');
-  console.log('╚══════════════════════════════════════════════════╝');
-  console.log('');
+  printBanner();
 
   // Mode inspection
   if (args.includes('--inspect')) {
