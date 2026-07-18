@@ -29,6 +29,7 @@ import { createTerminalTools } from '../tools/terminal.js';
 import { createWebTools } from '../tools/web.js';
 import { createVisionTools } from '../tools/vision.js';
 import { createSpeechTools } from '../tools/speech.js';
+import { createBrowserTools } from '../tools/browser.js';
 import { createNayaOSTools } from '../tools/nayaos-tools.js';
 import { SkillRegistry } from './skill.js';
 import { budgetSummary, resetBudget } from './budget.js';
@@ -129,6 +130,7 @@ export class Cortex {
       ...createWebTools(),
       ...createVisionTools(),
       ...createSpeechTools(),
+      ...createBrowserTools(),
       ...createNayaOSTools(this._nayaos),
     ]) {
       this.tools.register(tool);
