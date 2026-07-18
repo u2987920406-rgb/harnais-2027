@@ -14,6 +14,9 @@
  *   GET  /api/skills       -> liste skills
  *   POST /api/skills       -> cree une skill
  *   POST /api/skills/:n/apply -> applique une skill
+ *   POST /api/mode         -> change le mode de gouvernance (auto/plan/permission/edit)
+ *   GET  /api/pending      -> demandes d'approbation en attente (mode permission/edit)
+ *   POST /api/approve/:id  -> valide/refuse une demande d'approbation
  *
  * Lance: npm run ui
  */
@@ -22,7 +25,7 @@ import { createServer, type Server } from 'http';
 import { readFileSync, existsSync } from 'fs';
 import { dirname, join, extname } from 'path';
 import { fileURLToPath } from 'url';
-import { Cortex } from '../core/cortex.js';
+import { Cortex, type ApprovalChannel } from '../core/cortex.js';
 import { KnowledgeGraph } from '../memory/knowledge-graph.js';
 import { ModelBridge } from '../models/bridge.js';
 import { pushToWorkingMemory } from '../core/state.js';
@@ -51,15 +54,63 @@ function readBody(req: any): Promise<string> {
   });
 }
 
+/**
+ * Canal d'approbation pour l'UI (et Telegram-ready).
+ *
+ * En mode permission/edit, le Cortex appelle `ask()` pour chaque action
+ * sensible. Cette classe cree une Promise par demande et la garde en suspens
+ * dans une Map. Quand l'utilisateur valide (via la route /api/approve/:id),
+ * on appelle `resolve(id, ok)` qui debloque la Promise du Cortex.
+ *
+ * La liste `pendingForUI()` est consommee par GET /api/pending pour afficher
+ * les demandes dans le dashboard — et pourra etre reutilisee telle quelle par
+ * un futur canal Telegram (meme contrat: ask/resolve).
+ */
+export class UIApprovalChannel implements ApprovalChannel {
+  /** Demande en attente: id -> resolve + metadonnees. */
+  private pending = new Map<string, { tool: string; reason: string; resolve: (ok: boolean) => void }>();
+  private seq = 0;
+
+  /** Appele par le Cortex (mode permission/edit). Suspend le Cortex jusqu'a resolve(). */
+  ask(_tool: string, _params: Record<string, any>, _reason: string): Promise<boolean> {
+    const id = `ui${++this.seq}`;
+    return new Promise<boolean>((resolve) => {
+      this.pending.set(id, { tool: _tool, reason: _reason, resolve });
+    });
+  }
+
+  /** Debloque une demande (clic UI ou message Telegram). */
+  resolve(id: string, ok: boolean): void {
+    const entry = this.pending.get(id);
+    if (entry) {
+      this.pending.delete(id);
+      entry.resolve(ok);
+    }
+  }
+
+  /** Liste les demandes en attente pour affichage UI (id + outil + raison). */
+  pendingForUI(): { id: string; tool: string; reason: string }[] {
+    return Array.from(this.pending.entries()).map(([id, a]) => ({
+      id, tool: a.tool, reason: a.reason,
+    }));
+  }
+}
+
 export class UIServer {
   private cortex: Cortex;
   private bridge: ModelBridge;
   private port: number;
   private host: string;
   private server?: Server;
+  /** Canal d'approbation UI (Telegram-ready) branche sur le Cortex. */
+  private uiChannel: UIApprovalChannel;
 
   constructor(cortex: Cortex, opts: { port?: number; host?: string } = {}) {
     this.cortex = cortex;
+    // Canal d'approbation: branche un UIApprovalChannel sur le Cortex pour que
+    // les actions sensibles (mode permission/edit) attendent la validation UI.
+    this.uiChannel = new UIApprovalChannel();
+    this.cortex.approvalChannel = this.uiChannel;
     // Bridge local pour le stream (hy3 general). Reutilise le bridge du cortex
     // si expose; sinon en cree un leger. Le cortex possede deja le sien.
     this.bridge = (cortex as any).bridge ?? new ModelBridge({
@@ -158,6 +209,30 @@ export class UIServer {
         // --- Graphe ---
         if (path === '/api/graph' && req.method === 'GET') {
           return sendJson(res, 200, this.cortex.graph.stats());
+        }
+        // --- Mode de gouvernance: change a chaud ---
+        if (path === '/api/mode' && req.method === 'POST') {
+          const raw = await readBody(req);
+          let body: any = {};
+          try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: 'JSON invalide' }); }
+          const mode = body.mode;
+          const validModes = ['auto', 'plan', 'permission', 'edit'];
+          if (!validModes.includes(mode)) return sendJson(res, 400, { error: 'mode invalide (auto/plan/permission/edit)' });
+          this.cortex.setGovernanceMode(mode, body.sandbox, body.allowDangerous);
+          return sendJson(res, 200, { ok: true, mode: this.cortex.governanceMode });
+        }
+        // --- Approbations en attente (mode permission/edit) ---
+        if (path === '/api/pending' && req.method === 'GET') {
+          return sendJson(res, 200, this.uiChannel.pendingForUI());
+        }
+        // --- Resoudre une approbation (valider/refuser) ---
+        if (path.startsWith('/api/approve/') && req.method === 'POST') {
+          const id = decodeURIComponent(path.replace('/api/approve/', ''));
+          const raw = await readBody(req);
+          let ok = true;
+          try { ok = Boolean(JSON.parse(raw).ok); } catch { /* defaut: true */ }
+          this.uiChannel.resolve(id, ok);
+          return sendJson(res, 200, { ok: true });
         }
         // --- Static UI ---
         if (req.method === 'GET' && (path === '/' || path === '/index.html')) {

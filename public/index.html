@@ -22,6 +22,15 @@
     .skill-form button { background:var(--accent); color:#000; border:none; padding:8px; border-radius:6px; font-weight:600; cursor:pointer; }
     .btn-apply { background:#1f6feb; color:#fff; border:none; padding:4px 8px; border-radius:6px; font-size:11px; cursor:pointer; }
     .btn-tts { background:transparent; border:none; cursor:pointer; font-size:14px; margin-top:6px; }
+    .modes { display:flex; gap:4px; margin-left:auto; }
+    .modes button { background:var(--panel); color:var(--muted); border:1px solid #30363d; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:500; }
+    .modes button.active { background:var(--accent); color:#000; border-color:var(--accent); }
+    .approve-item { border:1px solid #30363d; border-radius:8px; padding:8px; margin-bottom:8px; }
+    .approve-item small { color:var(--muted); display:block; margin:4px 0; }
+    .approve-item .row { display:flex; gap:6px; }
+    .approve-item .row button { flex:1; padding:6px; font-size:11px; }
+    .approve-ok { background:#238636; color:#fff; }
+    .approve-no { background:#da3633; color:#fff; }
     .chat { display:flex; flex-direction:column; padding:16px; gap:12px; overflow-y:auto; }
     .msg { padding:10px 12px; border-radius:10px; max-width:80%; }
     .msg.user { background:#1f6feb22; align-self:flex-end; border:1px solid #1f6feb55; }
@@ -40,6 +49,12 @@
     <h1>🧠 Atlas</h1>
     <span class="badge">hy3:free · Nous</span>
     <span id="mode" class="badge">mode: …</span>
+    <div class="modes" id="modes">
+      <button data-mode="auto">auto</button>
+      <button data-mode="plan">plan</button>
+      <button data-mode="permission">permission</button>
+      <button data-mode="edit">edit</button>
+    </div>
   </header>
   <div class="layout">
     <div>
@@ -75,6 +90,8 @@
         <button id="sk-create">Créer la skill</button>
       </div>
       <div id="sk-list"></div>
+      <h3>Approbations</h3>
+      <div id="approve-list"><small style="color:var(--muted)">Aucune en attente</small></div>
     </div>
   </div>
 
@@ -176,6 +193,49 @@
 
     refreshState();
     setInterval(refreshState, 5000);
+
+    // --- Gouvernance: bascule de mode + approbations ---
+    const modesBar = document.getElementById('modes');
+    async function refreshMode() {
+      try {
+        const r = await fetch('/api/state'); const s = await r.json();
+        // governanceMode n'est pas dans /api/state: on le devine via le badge mode cycle.
+        // On marque actif le bouton correspondant si connu.
+      } catch (e) {}
+    }
+    modesBar.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const mode = btn.getAttribute('data-mode');
+        const res = await fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+        const data = await res.json();
+        if (data.ok) {
+          modesBar.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          addMsg('cortex', '✓ Mode gouvernance: ' + mode);
+        }
+      });
+    });
+    async function loadApprovals() {
+      try {
+        const r = await fetch('/api/pending'); const list = await r.json();
+        const el = document.getElementById('approve-list');
+        if (!list.length) { el.innerHTML = '<small style="color:var(--muted)">Aucune en attente</small>'; return; }
+        el.innerHTML = '';
+        list.forEach(a => {
+          const d = document.createElement('div'); d.className = 'approve-item';
+          d.innerHTML = `<small><b>${a.tool}</b> — ${a.reason}</small><div class="row"><button class="approve-ok" data-id="${a.id}">Valider</button><button class="approve-no" data-id="${a.id}">Refuser</button></div>`;
+          el.appendChild(d);
+        });
+        el.querySelectorAll('.approve-ok').forEach(b => b.addEventListener('click', () => resolveApproval(b.getAttribute('data-id'), true)));
+        el.querySelectorAll('.approve-no').forEach(b => b.addEventListener('click', () => resolveApproval(b.getAttribute('data-id'), false)));
+      } catch (e) {}
+    }
+    async function resolveApproval(id, ok) {
+      await fetch('/api/approve/' + id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok }) });
+      loadApprovals();
+    }
+    loadApprovals();
+    setInterval(loadApprovals, 3000);
 
     // --- Panneau Skills: lister / creer / appliquer ---
     async function loadSkills() {

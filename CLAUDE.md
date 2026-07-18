@@ -65,3 +65,11 @@ Pont vers NayaOS (API REST lecture+commande) et NayaQA (lecture verdicts QA).
 - Si une tache echoue 3 fois sur le meme fichier, arreter et demander a Raf
 - Ne jamais inventer des fichiers, symboles, ou APIs qui ne sont pas dans le repo
 - Tracer les symboles avant de modifier (read_file + search_files)
+
+## Gouvernance agentique
+- 4 modes: `auto` (agit, whitelist sur shell_exec), `plan` (propose seulement, aucune action), `permission` (demande validation avant action dangereuse), `edit` (demande validation avant ecriture fichier)
+- Sandbox shell_exec: `none` (direct), `whitelist` (bloque rm -rf/sudo/mkfs/format/dd/shutdown), `docker` (conteneur isolé si Docker)
+- Couche policière: `Governance.decide()` intercepte chaque outil avant `tools.execute()` dans la boucle `inject()`
+- FAIL-SAFE: si aucun canal d'approbation connecté (UI/Telegram), `requestApproval` refuse par défaut (jamais d'exécution non validée en silence)
+- UI: barre de modes + panneau Approbations (`/api/mode`, `/api/pending`, `/api/approve/:id`)
+- Voir `skills/gouvernance.skill.md` pour le comportement attendu du cortex
