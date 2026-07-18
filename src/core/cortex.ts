@@ -30,6 +30,7 @@ import { createWebTools } from '../tools/web.js';
 import { createVisionTools } from '../tools/vision.js';
 import { createSpeechTools } from '../tools/speech.js';
 import { createBrowserTools } from '../tools/browser.js';
+import { Governance } from '../security/governance.js';
 import { createNayaOSTools } from '../tools/nayaos-tools.js';
 import { SkillRegistry } from './skill.js';
 import { budgetSummary, resetBudget } from './budget.js';
@@ -84,6 +85,11 @@ const DEFAULT_CONFIG: CortexConfig = {
   allowDangerous: true,
 };
 
+/** Canal d'approbation: permet a l'utilisateur de valider une action (mode permission/edit). */
+export interface ApprovalChannel {
+  ask(tool: string, params: Record<string, any>, reason: string): Promise<boolean>;
+}
+
 export class Cortex {
   private bridge: ModelBridge;
   private _graph: KnowledgeGraph;
@@ -97,6 +103,9 @@ export class Cortex {
   private nayaqa: NayaQABridge;
   private _nayaos: NayaOSBridge;
   private _ui: UIServer | null = null;
+  private governance: Governance;
+  /** Canal d'approbation (UI/Telegram). null => fail-safe deny. */
+  approvalChannel: ApprovalChannel | null = null;
 
   /** Acces public en lecture au graphe de connaissance. */
   get graph(): KnowledgeGraph { return this._graph; }
@@ -110,6 +119,47 @@ export class Cortex {
     this._ui = new UIServer(this, { port, host });
     await this._ui.start();
     return this._ui.url;
+  }
+
+  // --- Gouvernance agentique ---
+
+  /** Change le mode de gouvernance a chaud (auto/plan/permission/edit). */
+  setGovernanceMode(mode: GovernanceMode, sandbox?: SandboxStrategy, allowDangerous?: boolean): void {
+    this.config.governanceMode = mode;
+    if (sandbox) this.config.sandbox = sandbox;
+    if (allowDangerous !== undefined) this.config.allowDangerous = allowDangerous;
+    this.governance = new Governance(this.config.governanceMode, this.config.sandbox, this.config.allowDangerous);
+    console.log(`[Cortex] Gouvernance -> mode=${mode} sandbox=${this.config.sandbox} allowDangerous=${this.config.allowDangerous}`);
+  }
+
+  get governanceMode(): GovernanceMode { return this.config.governanceMode; }
+
+  /** Liste les approbations en attente (pour l'UI). */
+  pendingApprovals(): { id: string; tool: string; reason: string }[] {
+    return Array.from(this._pendingApprovals.entries()).map(([id, a]) => ({ id, tool: a.tool, reason: a.reason }));
+  }
+
+  /** Resout une approbation en attente (UI/Telegram). */
+  resolveApproval(id: string, ok: boolean): void {
+    const resolver = this._pendingApprovals.get(id);
+    if (resolver) { this._pendingApprovals.delete(id); resolver.resolve(ok); }
+  }
+
+  private _pendingApprovals: Map<string, { tool: string; reason: string; resolve: (ok: boolean) => void }> = new Map();
+  private _approvalSeq = 0;
+
+  /** Demande validation via le canal connecte. Fail-safe: refuse si aucun canal. */
+  private async requestApproval(tool: string, params: Record<string, any>, reason: string): Promise<boolean> {
+    if (!this.approvalChannel) {
+      console.log(`[Cortex] Approbation REFUSEE (fail-safe: aucun canal d'approbation connecte) -> ${tool}`);
+      return false;
+    }
+    const id = `ap${++this._approvalSeq}`;
+    const promise = new Promise<boolean>((resolve) => {
+      this._pendingApprovals.set(id, { tool, reason, resolve });
+    });
+    console.log(`[Cortex] Approbation REQUISE (${id}): ${tool} — ${reason}`);
+    return promise;
   }
 
   state: CortexState;
@@ -127,6 +177,7 @@ export class Cortex {
     this.bridge = bridge ?? new ModelBridge();
     this._graph = graph ?? new KnowledgeGraph();
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.governance = new Governance(this.config.governanceMode, this.config.sandbox, this.config.allowDangerous);
     this.spawner = new Spawner(this.bridge, this._graph);
     this.tom = new TheoryOfMind(this.bridge);
     this.consolidation = new Consolidation(this.bridge, this._graph);
@@ -452,6 +503,22 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           }
 
           console.log(`[Cortex] Appel outil: ${toolName} ${JSON.stringify(toolParams).slice(0, 80)}`);
+
+          // Gouvernance: decide avant d'executer
+          const decision = this.governance.decide(toolName, toolParams);
+          if (decision.action === 'deny') {
+            console.log(`[Cortex] REFUSE (${decision.reason}): ${toolName}`);
+            toolResults.push(`REFUSE (${decision.reason}): ${toolName}`);
+            continue;
+          }
+          if (decision.action === 'ask') {
+            const approved = await this.requestApproval(toolName, toolParams, decision.reason);
+            if (!approved) {
+              console.log(`[Cortex] ANNULE par l'utilisateur: ${toolName}`);
+              toolResults.push(`ANNULE (utilisateur): ${toolName}`);
+              continue;
+            }
+          }
 
           const result = await this.tools.execute(toolName, toolParams);
           console.log(`[Cortex] Outil ${toolName}: ${result.success ? 'OK' : 'ECHEC'} (${result.durationMs}ms)`);
