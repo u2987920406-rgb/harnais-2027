@@ -8,17 +8,27 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Tool, ToolResult } from './registry.js';
+import { dockerRunCmd } from '../security/sandbox.js';
 
 const execAsync = promisify(exec);
 
-async function run(params: Record<string, any>): Promise<ToolResult> {
+// Stratégies de sandbox disponibles pour l'exécution shell.
+export type SandboxStrategy = 'none' | 'whitelist' | 'docker';
+
+async function run(
+  params: Record<string, any>,
+  strategy: SandboxStrategy = 'none'
+): Promise<ToolResult> {
   const start = Date.now();
   const command = params.command as string;
   const timeout = (params.timeout as number) ?? 10000;
   const cwd = params.cwd as string | undefined;
 
+  // En stratégie docker, on enveloppe la commande dans un conteneur isolé.
+  const effectiveCommand = strategy === 'docker' ? dockerRunCmd(command) : command;
+
   try {
-    const { stdout } = await execAsync(command, {
+    const { stdout } = await execAsync(effectiveCommand, {
       timeout,
       maxBuffer: 1024 * 1024,
       encoding: 'utf-8',

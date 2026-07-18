@@ -55,12 +55,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export type CortexMode = 'awake' | 'idle' | 'sleep';
 
+/** Modes de GOUVERNANCE (choisis par l'utilisateur, controle les actions du cortex). */
+export type GovernanceMode = 'auto' | 'plan' | 'permission' | 'edit';
+
+/** Strategie d'isolation pour l'execution shell. */
+export type SandboxStrategy = 'none' | 'whitelist' | 'docker';
+
 export interface CortexConfig {
   tickIntervalMs: number;     // intervalle entre les ticks en mode idle
   idleThoughtInterval: number; // tous les N ticks en idle, on pense
   sleepInterval: number;       // tous les N ticks, on consolide
   maxBackgroundThreads: number;
   statePath: string;
+  // Gouvernance agentique
+  governanceMode: GovernanceMode;   // mode par defaut au demarrage
+  sandbox: SandboxStrategy;         // isolation shell_exec
+  allowDangerous: boolean;          // false => outils dangerous bloques hors permission
 }
 
 const DEFAULT_CONFIG: CortexConfig = {
@@ -69,6 +79,9 @@ const DEFAULT_CONFIG: CortexConfig = {
   sleepInterval: 50,
   maxBackgroundThreads: 5,
   statePath: join(__dirname, '..', '..', 'data', 'cortex-state.json'),
+  governanceMode: 'auto',
+  sandbox: 'whitelist',
+  allowDangerous: true,
 };
 
 export class Cortex {
