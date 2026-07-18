@@ -11,10 +11,10 @@ import { Tool, ToolResult } from './registry.js';
 import { ModelBridge } from '../models/bridge.js';
 
 export function createVisionTools(): Tool[] {
-  // Bridge local strict: vision uniquement, pas de cloud.
+  // Bridge local strict: vision uniquement via infra Nous (gpt-4o-mini gratuit)
   const bridge = new ModelBridge({
-    visionModel: 'qwen3-vl:8b',
-    allowCloud: false,
+    visionModel: 'openai/gpt-4o-mini',
+    allowCloud: true,
   });
 
   return [

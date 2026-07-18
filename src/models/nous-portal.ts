@@ -136,10 +136,55 @@ export class NousPortalConnector {
     return this.auth?.inferenceBaseUrl ?? DEFAULT_INFERENCE_URL;
   }
 
-  /** Vrai si ce connecteur doit gerer ce modele. */
+  /** Vrai si ce connecteur doit gerer ce modele (texte OU vision Nous). */
   static handles(model: string): boolean {
     const m = model.toLowerCase();
-    return m.includes('hy3') || m.includes('hunyuan') || m.includes('nous') || m.startsWith('tencent/');
+    return m.includes('hy3') || m.includes('hunyuan') || m.includes('nous')
+      || m.startsWith('tencent/') || m.includes('gpt-4o') || m.includes('gemini')
+      || m.includes('qwen') || m.includes('ministral');
+  }
+
+  /**
+   * Vision multimodale: envoie une image (data URI) + prompt a un modele
+   * vision de l'infra Nous (OpenAI-compatible, content multimodal).
+   */
+  async visionMultimodal(model: string, prompt: string, imageDataUri: string): Promise<ModelResponse> {
+    const token = this.resolveToken();
+    if (!token) throw new Error('NousPortal: token manquant (login Hermes ou NOUS_PORTAL_TOKEN)');
+    const body: any = {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageDataUri } },
+          ],
+        },
+      ],
+      temperature: 0.4,
+      max_tokens: 1024,
+      stream: false,
+    };
+    const res = await fetch(`${this.baseUrl()}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`NousPortal vision HTTP ${res.status}: ${err.slice(0, 200)}`);
+    }
+    const data: any = await res.json();
+    const text = data.choices?.[0]?.message?.content ?? '';
+    const usage = data.usage ?? {};
+    return {
+      text,
+      model: data.model ?? model,
+      tokensGenerated: usage.completion_tokens ?? text.length / 4,
+      evalCount: usage.prompt_tokens ?? 0,
+      done: true,
+    };
   }
 
   async generate(req: ModelRequest): Promise<ModelResponse> {
