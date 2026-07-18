@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: BridgeConfig = {
   reasoningModel: 'qwythos-tools:q6',
   creativeModel: 'tencent/hy3:free',
   generalModel: 'tencent/hy3:free',
-  visionModel: 'qwen3-vl:8b', // local (lourd RAM). Alt: 'openai/gpt-4o-mini' / '~google/gemini-flash-latest' via Nous Portal (visionMultimodal pret, requiert credits Nous)
+  visionModel: 'qwen2.5vl:3b', // local leger (~2Go), pull: ollama pull qwen2.5vl:3b
   metaModel: 'qwythos-tools:q6',
   consolidationModel: 'tencent/hy3:free',
   critiqueModel: 'qwythos-tools:q6',
@@ -309,18 +309,29 @@ export class ModelBridge {
   async vision(imagePath: string, prompt = 'Decris cette image en detail.'): Promise<ModelResponse> {
     const { readFileSync } = await import('fs');
     const { extname } = await import('path');
-    const visionModel = this.config.visionModel; // ex: openai/gpt-4o-mini
-    const mime = extname(imagePath).toLowerCase() === '.png' ? 'image/png'
-      : extname(imagePath).toLowerCase() === '.jpg' || extname(imagePath).toLowerCase() === '.jpeg' ? 'image/jpeg'
-      : extname(imagePath).toLowerCase() === '.webp' ? 'image/webp' : 'image/png';
-    const b64 = readFileSync(imagePath).toString('base64');
-    const dataUri = `data:${mime};base64,${b64}`;
-
+    const visionModel = this.config.visionModel; // ex: qwen2.5vl:3b (local) ou openai/gpt-4o-mini (Nous)
     const t0 = Date.now();
-    const response = await this.nous.visionMultimodal(visionModel, prompt, dataUri);
+
+    // Si le modele est heberge sur l'infra Nous (cloud), on utilise le multimodal Portal.
+    // Sinon (modele local Ollama type qwen*), on route vers le connecteur Ollama.
+    let response: ModelResponse;
+    if (NousPortalConnector.handles(visionModel) && !visionModel.includes('qwen')) {
+      const mime = extname(imagePath).toLowerCase() === '.png' ? 'image/png'
+        : extname(imagePath).toLowerCase() === '.jpg' || extname(imagePath).toLowerCase() === '.jpeg' ? 'image/jpeg'
+        : extname(imagePath).toLowerCase() === '.webp' ? 'image/webp' : 'image/png';
+      const b64 = readFileSync(imagePath).toString('base64');
+      const dataUri = `data:${mime};base64,${b64}`;
+      response = await this.nous.visionMultimodal(visionModel, prompt, dataUri);
+    } else {
+      const base64 = readFileSync(imagePath).toString('base64');
+      response = await this.connector.generateWithImage({
+        model: visionModel, imageBase64: base64, prompt,
+        temperature: 0.4, maxTokens: 1024,
+      });
+    }
     const elapsed = Date.now() - t0;
     this.totalTokens += response.tokensGenerated ?? 0;
-    console.log(`[Bridge] vision -> ${visionModel} (NousPortal, ${elapsed}ms, ~${response.tokensGenerated ?? '?'} tok)`);
+    console.log(`[Bridge] vision -> ${visionModel} (${elapsed}ms, ~${response.tokensGenerated ?? '?'} tok)`);
     return response;
   }
 
