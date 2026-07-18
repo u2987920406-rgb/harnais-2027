@@ -133,5 +133,78 @@ export function createWebTools(): Tool[] {
       ],
       execute: extract,
     },
+    {
+      name: 'web_fetch',
+      description: 'Navigateur souverain: charge une page web et renvoie le texte lisible + les liens trouvés (titre -> url). Permet de "cliquer" en passant une URL extraite.',
+      risk: 'safe',
+      parameters: [
+        { name: 'url', type: 'string', description: 'URL à charger', required: true },
+        { name: 'maxLinks', type: 'number', description: 'Nombre max de liens à extraire (défaut 10)', required: false },
+      ],
+      execute: fetchPage,
+    },
   ];
+}
+
+/**
+ * Navigateur souverain: charge une page, extrait le texte lisible et la liste
+ * des liens (pour suivre un clic). Pas de SDK, pas de dépendance.
+ */
+async function fetchPage(params: Record<string, any>): Promise<ToolResult> {
+  const start = Date.now();
+  try {
+    const url = params.url as string;
+    const maxLinks = Number(params.maxLinks ?? 10);
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Atlas-Harnais)' },
+      signal: AbortSignal.timeout(20000),
+      redirect: 'follow',
+    });
+
+    if (!res.ok) {
+      return { success: false, output: '', error: `HTTP ${res.status}`, durationMs: Date.now() - start };
+    }
+
+    const finalUrl = res.url || url;
+    const html = await res.text();
+
+    // Texte lisible
+    const text = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Liens: <a href="...">texte</a>
+    const links: { title: string; url: string }[] = [];
+    const linkRegex = /<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = linkRegex.exec(html)) !== null && links.length < maxLinks) {
+      const href = m[1].trim();
+      const title = m[2].replace(/<[^>]*>/g, '').trim();
+      if (!href.startsWith('http') && !href.startsWith('/')) continue;
+      const abs = href.startsWith('http') ? href : new URL(href, finalUrl).href;
+      if (title && !/^\s*$/.test(title)) links.push({ title: title.slice(0, 120), url: abs });
+    }
+
+    const linksText = links.length
+      ? '\n\nLIENS TROUVÉS:\n' + links.map((l, i) => `[${i + 1}] ${l.title}\n    ${l.url}`).join('\n')
+      : '';
+    const truncated = text.length > 8000;
+    const body = (truncated ? text.slice(0, 8000) + '\n...[tronqué]' : text) + linksText;
+
+    return {
+      success: true,
+      output: body,
+      data: { url: finalUrl, length: text.length, links: links.length, truncated },
+      durationMs: Date.now() - start,
+    };
+  } catch (err: any) {
+    return { success: false, output: '', error: err.message, durationMs: Date.now() - start };
+  }
 }

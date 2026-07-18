@@ -27,6 +27,8 @@ import { ToolRegistry } from '../tools/registry.js';
 import { createFilesystemTools } from '../tools/filesystem.js';
 import { createTerminalTools } from '../tools/terminal.js';
 import { createWebTools } from '../tools/web.js';
+import { createVisionTools } from '../tools/vision.js';
+import { createSpeechTools } from '../tools/speech.js';
 import { createNayaOSTools } from '../tools/nayaos-tools.js';
 import { SkillRegistry } from './skill.js';
 import { budgetSummary, resetBudget } from './budget.js';
@@ -119,12 +121,14 @@ export class Cortex {
     // Pont NayaOS — cree AVANT les outils car les outils NayaOS en dependent
     this._nayaos = new NayaOSBridge(this._graph);
 
-    // Enregistre les outils (filesystem + terminal + web + NayaOS)
+    // Enregistre les outils (filesystem + terminal + web + vision + NayaOS)
     this.tools = new ToolRegistry();
     for (const tool of [
       ...createFilesystemTools(),
       ...createTerminalTools(),
       ...createWebTools(),
+      ...createVisionTools(),
+      ...createSpeechTools(),
       ...createNayaOSTools(this._nayaos),
     ]) {
       this.tools.register(tool);

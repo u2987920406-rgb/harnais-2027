@@ -1,342 +1,187 @@
 /**
- * UI Server — Dashboard web pour le Cortex Harnais 2027.
+ * UIServer — Serveur HTTP natif (0 dependance npm) pour piloter Atlas depuis une UI web.
  *
- * Serveur HTTP + WebSocket en Node.js natif (0 dépendance npm).
- * Sert un dashboard HTML/CSS/JS qui visualise en temps réel:
- * - L'état du cortex (mode, cycle, focus, budget)
- * - Le graphe de connaissance (canvas, force-directed)
- * - Les threads de pensée (arrière-plan)
- * - Les hypothèses actives
- * - La mémoire de travail
- * - Un chat panel pour interagir avec le cortex
+ * C'est la couche presentation: expose le Cortex via HTTP/JSON + SSE.
+ * Le Cortex reste le proprietaire de la cognition; le serveur ne fait que
+ * traduire les requetes HTTP en appels Cortex et renvoyer du JSON.
  *
- * Usage:
- *   Le cortex démarre le serveur si config.ui.enabled = true
- *   Ou manuellement: import { UIServer } from './ui/server.js'
+ * Routes:
+ *   GET  /                 -> sert public/index.html
+ *   GET  /api/state        -> etat du cortex
+ *   POST /api/inject       -> message utilisateur -> reponse cortex
+ *   POST /api/stream       -> SSE, apercu live (hy3)
+ *   GET  /api/graph        -> stats graphe
+ *   GET  /api/skills       -> liste skills
+ *   POST /api/skills       -> cree une skill
+ *   POST /api/skills/:n/apply -> applique une skill
+ *
+ * Lance: npm run ui
  */
 
-import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'http';
-import type { Socket } from 'net';
-import { createHash } from 'crypto';
+import { createServer, type Server } from 'http';
+import { readFileSync, existsSync } from 'fs';
+import { dirname, join, extname } from 'path';
+import { fileURLToPath } from 'url';
 import { Cortex } from '../core/cortex.js';
-import { stateToSummary } from '../core/state.js';
-import { DASHBOARD_HTML } from './dashboard-html.js';
+import { KnowledgeGraph } from '../memory/knowledge-graph.js';
+import { ModelBridge } from '../models/bridge.js';
+import { pushToWorkingMemory } from '../core/state.js';
 
-export interface UIServerConfig {
-  port: number;
-  host: string;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = join(__dirname, '..', 'public');
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+};
+
+function sendJson(res: any, code: number, data: unknown): void {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(data));
 }
 
-const DEFAULT_CONFIG: UIServerConfig = {
-  port: 7891,
-  host: '127.0.0.1',
-};
+function readBody(req: any): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c: any) => { data += c; });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
 
 export class UIServer {
   private cortex: Cortex;
-  private config: UIServerConfig;
-  private server: Server;
-  private wsClients = new Set<{ socket: Socket; send: (data: any) => void }>();
-  private running = false;
-  private pushInterval: ReturnType<typeof setInterval> | null = null;
+  private bridge: ModelBridge;
+  private port: number;
+  private host: string;
+  private server?: Server;
 
-  constructor(cortex: Cortex, config: Partial<UIServerConfig> = {}) {
+  constructor(cortex: Cortex, opts: { port?: number; host?: string } = {}) {
     this.cortex = cortex;
-    this.config = { ...DEFAULT_CONFIG, ...config };
-    this.server = createServer(this.handleHTTP.bind(this));
-  }
-
-  /**
-   * Démarre le serveur HTTP + WebSocket.
-   */
-  async start(): Promise<void> {
-    return new Promise((resolve) => {
-      this.server.listen(this.config.port, this.config.host, () => {
-        console.log(`[UI] Dashboard: http://${this.config.host}:${this.config.port}`);
-        this.running = true;
-        this.startPushLoop();
-        resolve();
-      });
-
-      // Upgrade handler pour WebSocket
-      this.server.on('upgrade', (req: IncomingMessage, socket: any, head: Buffer) => {
-        this.handleUpgrade(req, socket, head);
-      });
+    // Bridge local pour le stream (hy3 general). Reutilise le bridge du cortex
+    // si expose; sinon en cree un leger. Le cortex possede deja le sien.
+    this.bridge = (cortex as any).bridge ?? new ModelBridge({
+      generalModel: 'tencent/hy3:free', consolidationModel: 'tencent/hy3:free',
+      reasoningModel: 'qwythos-tools:q6', metaModel: 'qwythos-tools:q6',
+      critiqueModel: 'qwythos-tools:q6', allowCloud: true,
     });
+    this.port = opts.port ?? 7891;
+    this.host = opts.host ?? '127.0.0.1';
   }
 
-  async stop(): Promise<void> {
-    this.running = false;
-    if (this.pushInterval) clearInterval(this.pushInterval);
-    this.wsClients.clear();
-    return new Promise((resolve) => {
-      this.server.close(() => resolve());
-    });
-  }
+  get url(): string { return `http://${this.host}:${this.port}`; }
 
-  // --- HTTP ---
-
-  private handleHTTP(req: IncomingMessage, res: ServerResponse): void {
-    const url = req.url ?? '/';
-
-    // CORS permissif (local only)
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    // Routes API
-    if (url === '/api/state') {
-      this.sendJSON(res, this.getStateSnapshot());
-      return;
-    }
-
-    if (url === '/api/graph') {
-      this.sendJSON(res, this.getGraphSnapshot());
-      return;
-    }
-
-    if (url === '/api/skills') {
-      const skills = this.cortex.skills.list();
-      this.sendJSON(res, skills);
-      return;
-    }
-
-    if (url === '/api/introspect') {
-      this.cortex.introspect().then(summary => {
-        this.sendJSON(res, { summary });
-      });
-      return;
-    }
-
-    if (url === '/api/tools') {
-      this.sendJSON(res, { tools: (this.cortex as any).tools?.list() ?? [] });
-      return;
-    }
-
-    // Chat endpoint (POST)
-    if (url === '/api/chat' && req.method === 'POST') {
-      this.handleChat(req, res);
-      return;
-    }
-
-    // Dashboard HTML (accepte query string pour bypass cache navigateur)
-    if (url === '/' || url === '/index.html' || url.startsWith('/?')) {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-      });
-      res.end(DASHBOARD_HTML);
-      return;
-    }
-
-    res.writeHead(404);
-    res.end('Not found');
-  }
-
-  private handleChat(req: IncomingMessage, res: ServerResponse): void {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
+  /** Demarre le serveur (le Cortex doit deja etre init()). */
+  start(): void {
+    this.server = createServer(async (req: any, res: any) => {
+      const url = new URL(req.url ?? '/', `http://localhost:${this.port}`);
+      const path = url.pathname;
       try {
-        const { message } = JSON.parse(body);
-        if (!message || typeof message !== 'string') {
-          this.sendJSON(res, { error: 'message requis' }, 400);
-          return;
+        // --- Skills: lister ---
+        if (path === '/api/skills' && req.method === 'GET') {
+          return sendJson(res, 200, this.cortex.skills.list().map(s => ({
+            name: s.name, description: s.description, tags: s.tags ?? [], mode: s.mode ?? 'soft', body: s.body.slice(0, 400),
+          })));
         }
-        // Injecte dans le cortex
-        const response = await this.cortex.inject(message);
-        this.sendJSON(res, { response });
-        // Notifie les WS clients
-        this.broadcast({ type: 'chat', user: message, cortex: response });
+        // --- Skills: creer ---
+        if (path === '/api/skills' && req.method === 'POST') {
+          const raw = await readBody(req);
+          let body: any = {};
+          try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: 'JSON invalide' }); }
+          const { name, description, content, tags, mode } = body;
+          if (!name || !description || !content) return sendJson(res, 400, { error: 'champs name/description/content requis' });
+          const safeMode = mode === 'strict' ? 'strict' : 'soft';
+          try {
+            const filePath = this.cortex.skills.addSkill(name, description, content, Array.isArray(tags) ? tags : [], safeMode);
+            const count = this.cortex.skills.reload();
+            return sendJson(res, 201, { ok: true, file: filePath, mode: safeMode, totalSkills: count });
+          } catch (e: any) { return sendJson(res, 500, { error: e?.message ?? 'echec creation skill' }); }
+        }
+        // --- Skills: appliquer ---
+        if (path.startsWith('/api/skills/') && path.endsWith('/apply') && req.method === 'POST') {
+          const name = decodeURIComponent(path.split('/')[3]);
+          const skill = this.cortex.skills.get(name);
+          if (!skill) return sendJson(res, 404, { error: 'skill inconnue' });
+          pushToWorkingMemory(this.cortex.state, `SKILL APPLIQUEE: ${skill.name}\n${skill.body}`, 'action', 1.0);
+          return sendJson(res, 200, { ok: true, applied: skill.name, description: skill.description });
+        }
+        // --- Etat ---
+        if (path === '/api/state' && req.method === 'GET') {
+          const s = this.cortex.state;
+          return sendJson(res, 200, {
+            cycles: s.cycles, mode: this.cortex.mode,
+            userTone: s.userTone, userEngagement: s.userEngagement,
+            workingMemorySize: s.workingMemory.length,
+            activeHypotheses: s.activeHypotheses.length,
+            backgroundThreads: s.backgroundThreads.length,
+            budgetSpent: s.budgetSpent, lastInteraction: s.lastInteraction,
+            workingMemory: s.workingMemory.slice(-10).map(w => ({ type: w.type, content: w.content.slice(0, 200) })),
+            graph: this.cortex.graph.stats(),
+          });
+        }
+        // --- Inject ---
+        if (path === '/api/inject' && req.method === 'POST') {
+          const raw = await readBody(req);
+          let message = '';
+          try { message = JSON.parse(raw).message ?? ''; } catch { message = raw; }
+          if (!message.trim()) return sendJson(res, 400, { error: 'message vide' });
+          const INJECT_TIMEOUT_MS = 180_000;
+          const timeout = new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('delai modele depasse')), INJECT_TIMEOUT_MS));
+          try {
+            const response = await Promise.race([this.cortex.inject(message), timeout]);
+            return sendJson(res, 200, { response, state: { cycles: this.cortex.state.cycles } });
+          } catch (e: any) { return sendJson(res, 503, { error: e?.message ?? 'echec inject' }); }
+        }
+        // --- Stream SSE ---
+        if (path === '/api/stream' && req.method === 'POST') {
+          const raw = await readBody(req);
+          let message = '';
+          try { message = JSON.parse(raw).message ?? ''; } catch { message = raw; }
+          if (!message.trim()) return sendJson(res, 400, { error: 'message vide' });
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+          res.write(`event: meta\ndata: ${JSON.stringify({ mode: this.cortex.mode, model: 'hy3:free' })}\n\n`);
+          const ctx = this.cortex.graph.toContext(10);
+          const prompt = `[Contexte graphe]\n${ctx}\n\n[Message utilisateur]\n${message}\n\nReponds en francais.`;
+          try {
+            for await (const token of this.bridge.thinkStream(prompt, 'general')) {
+              res.write(`data: ${JSON.stringify(token)}\n\n`);
+            }
+            res.write('event: done\ndata: {}\n\n');
+          } catch (e: any) {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: e?.message ?? 'echec stream' })}\n\n`);
+          }
+          return res.end();
+        }
+        // --- Graphe ---
+        if (path === '/api/graph' && req.method === 'GET') {
+          return sendJson(res, 200, this.cortex.graph.stats());
+        }
+        // --- Static UI ---
+        if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
+          const filePath = join(PUBLIC_DIR, 'index.html');
+          if (!existsSync(filePath)) return sendJson(res, 404, { error: 'UI non trouvee' });
+          res.writeHead(200, { 'Content-Type': MIME['.html'] });
+          return res.end(readFileSync(filePath));
+        }
+        if (req.method === 'GET' && path.startsWith('/public/')) {
+          const filePath = join(PUBLIC_DIR, path.replace('/public/', ''));
+          if (!existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
+          res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' });
+          return res.end(readFileSync(filePath));
+        }
+        res.writeHead(404); res.end('404');
       } catch (err: any) {
-        this.sendJSON(res, { error: err.message }, 500);
+        sendJson(res, 500, { error: err?.message ?? 'erreur serveur' });
       }
     });
-  }
 
-  // --- WebSocket ---
-
-  private handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
-    const key = req.headers['sec-websocket-key'] as string;
-    if (!key) {
-      socket.destroy();
-      return;
-    }
-
-    // Handshake WebSocket RFC 6455
-    const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-    socket.write(
-      `HTTP/1.1 101 Switching Protocols\r\n` +
-      `Upgrade: websocket\r\n` +
-      `Connection: Upgrade\r\n` +
-      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
-    );
-
-    // Wrapper minimal pour le client WS
-    const client = this.createWSClient(socket);
-    this.wsClients.add(client);
-
-    socket.on('close', () => {
-      this.wsClients.delete(client);
+    this.server.listen(this.port, () => {
+      console.log(`[UI] Atlas sur http://localhost:${this.port} | hy3:free (général) + qwythos (raisonnement)`);
     });
-
-    socket.on('data', (data: Buffer) => {
-      // Parse incoming WS frame (text only, masqué par le client)
-      this.handleWSMessage(client, data);
-    });
-
-    // Envoie l'état initial immediatement
-    client.send(this.getStateSnapshot());
-    client.send(this.getGraphSnapshot());
   }
 
-  private createWSClient(socket: import('net').Socket): any {
-    return {
-      socket,
-      send: (data: any) => {
-        if (socket.writable) {
-          const payload = typeof data === 'string' ? data : JSON.stringify(data);
-          this.sendWSFrame(socket, payload);
-        }
-      },
-    };
-  }
-
-  private sendWSFrame(socket: import('net').Socket, payload: string): void {
-    const payloadBytes = Buffer.from(payload, 'utf-8');
-    const mask = false; // serveur -> client: pas de masque
-
-    let header: Buffer;
-    if (payloadBytes.length < 126) {
-      header = Buffer.alloc(2);
-      header[0] = 0x81; // FIN + text frame
-      header[1] = mask ? 0x80 | payloadBytes.length : payloadBytes.length;
-    } else if (payloadBytes.length < 65536) {
-      header = Buffer.alloc(4);
-      header[0] = 0x81;
-      header[1] = mask ? 0x80 | 126 : 126;
-      header.writeUInt16BE(payloadBytes.length, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[0] = 0x81;
-      header[1] = mask ? 0x80 | 127 : 127;
-      header.writeBigUInt64BE(BigInt(payloadBytes.length), 2);
-    }
-
-    socket.write(Buffer.concat([header, payloadBytes]));
-  }
-
-  private handleWSMessage(client: any, data: Buffer): void {
-    // Decode minimal: on lit juste les text frames du client
-    // Format: [FIN/opcode][MASK/len][mask key][payload]
-    if (data.length < 6) return;
-    const opcode = data[0] & 0x0f;
-    if (opcode === 0x8) { // close
-      this.wsClients.delete(client);
-      return;
-    }
-    if (opcode !== 0x1) return; // text only
-
-    const masked = (data[1] & 0x80) !== 0;
-    let payloadLen = data[1] & 0x7f;
-    let offset = 2;
-    if (payloadLen === 126) {
-      payloadLen = data.readUInt16BE(2);
-      offset = 4;
-    } else if (payloadLen === 127) {
-      offset = 10;
-    }
-
-    if (masked) {
-      const maskKey = data.subarray(offset, offset + 4);
-      offset += 4;
-      const payload = data.subarray(offset, offset + payloadLen);
-      const decoded = Buffer.alloc(payload.length);
-      for (let i = 0; i < payload.length; i++) {
-        decoded[i] = payload[i] ^ maskKey[i % 4];
-      }
-      try {
-        const msg = JSON.parse(decoded.toString('utf-8'));
-        if (msg.type === 'ping') {
-          client.send({ type: 'pong' });
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  // --- Push loop: broadcast state every 2s ---
-
-  private startPushLoop(): void {
-    this.pushInterval = setInterval(() => {
-      if (this.wsClients.size === 0) return;
-      // getStateSnapshot / getGraphSnapshot retournent DEJA {type, data}
-      // pas de double-emballege
-      this.broadcast(this.getStateSnapshot());
-      this.broadcast(this.getGraphSnapshot());
-    }, 2000);
-  }
-
-  private broadcast(msg: any): void {
-    for (const client of Array.from(this.wsClients)) {
-      client.send(msg);
-    }
-  }
-
-  // --- Snapshots ---
-
-  private getStateSnapshot(): any {
-    const state = this.cortex.state;
-    return {
-      type: 'state',
-      data: {
-        mode: this.cortex.mode,
-        cycles: state.cycles,
-        focus: state.currentFocus,
-        focusIntensity: state.focusIntensity,
-        activeHypotheses: state.activeHypotheses,
-        pendingQuestions: state.pendingQuestions,
-        workingMemory: state.workingMemory.slice(-20),
-        backgroundThreads: state.backgroundThreads,
-        userTone: state.userTone,
-        userEngagement: state.userEngagement,
-        budgetSpent: state.budgetSpent,
-        cognitiveBudget: state.cognitiveBudget,
-        selfModifications: state.selfModifications,
-        lastInteraction: state.lastInteraction,
-        lastThought: state.lastThought,
-        summary: stateToSummary(state),
-      },
-    };
-  }
-
-  private getGraphSnapshot(): any {
-    const graph = this.cortex.graph;
-    const stats = graph.stats();
-    const snap = {
-      type: 'graph',
-      data: {
-        stats,
-        nodes: graph.allNodes().map((n: any) => ({ id: n.id, type: n.type, label: n.label, weight: n.weight, accessCount: n.accessCount })),
-        edges: graph.allEdges().map((e: any) => ({ id: e.id, from: e.from, to: e.to, type: e.type, weight: e.weight })),
-      },
-    };
-    return snap;
-  }
-
-  // --- Helpers ---
-
-  private sendJSON(res: ServerResponse, data: any, status = 200): void {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(data));
-  }
-
-  get url(): string {
-    return `http://${this.config.host}:${this.config.port}`;
-  }
+  stop(): void { this.server?.close(); }
 }

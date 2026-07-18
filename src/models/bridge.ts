@@ -300,6 +300,25 @@ export class ModelBridge {
     });
   }
 
+  /**
+   * Vision: decrit une image via le modele local qwen3-vl (souverain).
+   * imagePath = chemin local; on lit et encode en base64.
+   */
+  async vision(imagePath: string, prompt = 'Decris cette image en detail.'): Promise<ModelResponse> {
+    const { readFileSync } = await import('fs');
+    const visionModel = this.config.visionModel;
+    const base64 = readFileSync(imagePath).toString('base64');
+    const t0 = Date.now();
+    const response = await this.connector.generateWithImage({
+      model: visionModel, imageBase64: base64, prompt,
+      temperature: 0.4, maxTokens: 1024,
+    });
+    const elapsed = Date.now() - t0;
+    this.totalTokens += response.tokensGenerated ?? 0;
+    console.log(`[Bridge] vision -> ${visionModel} (${elapsed}ms, ~${response.tokensGenerated ?? '?'} tok)`);
+    return response;
+  }
+
   getBudget(): Budget { return this.budget; }
   getProviders(): ProviderInfo[] { return this.providers; }
 

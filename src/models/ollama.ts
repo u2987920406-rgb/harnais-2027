@@ -164,4 +164,32 @@ export class OllamaConnector {
       return [];
     }
   }
+
+  /**
+   * Génère une description à partir d'une image (vision).
+   * Envoie l'image encodée en base64 dans le champ "images" d'Ollama.
+   */
+  async generateWithImage(req: ModelRequest & { imageBase64: string; prompt: string }): Promise<ModelResponse> {
+    const body = {
+      model: req.model,
+      prompt: req.prompt,
+      images: [req.imageBase64],
+      stream: false,
+      options: { temperature: req.temperature ?? 0.4, num_predict: req.maxTokens ?? 1024 },
+    };
+    const res = await fetch(`${this.url}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Ollama vision HTTP ${res.status}: ${await res.text()}`);
+    const data: any = await res.json();
+    return {
+      text: data.response ?? '',
+      model: data.model,
+      tokensGenerated: data.eval_count,
+      evalCount: data.eval_count,
+      done: data.done ?? true,
+    };
+  }
 }
