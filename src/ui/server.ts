@@ -31,7 +31,7 @@ import { ModelBridge } from '../models/bridge.js';
 import { pushToWorkingMemory } from '../core/state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = join(__dirname, '..', 'public');
+const PUBLIC_DIR = join(__dirname, '..', '..', 'public');
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
