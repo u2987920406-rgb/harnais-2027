@@ -8,7 +8,7 @@
  * Inspire d'Atlas core/skill.ts, adapte au harnais.
  */
 
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -106,6 +106,32 @@ export class SkillRegistry {
 
   list(): Skill[] {
     return Array.from(this.skills.values());
+  }
+
+  /**
+   * Recharge toutes les skills depuis le disque (apres ajout/edition).
+   */
+  reload(): number {
+    this.skills.clear();
+    return this.load();
+  }
+
+  /**
+   * Cree ou ecrase une skill: ecrit le .skill.md sur disque puis l'enregistre
+   * en memoire. Le nom sert de nom de fichier (securise: alphanumerique + -).
+   * Retourne le chemin du fichier ecrit.
+   */
+  addSkill(name: string, description: string, body: string, tags: string[] = []): string {
+    const safe = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+    if (!safe) throw new Error('nom de skill invalide');
+    const tagsLine = tags.length ? `[${tags.join(', ')}]` : '[]';
+    const content = `---\nname: ${safe}\ndescription: ${description}\ntags: ${tagsLine}\n---\n\n${body.trim()}\n`;
+    const filePath = join(this.skillsDir, `${safe}.skill.md`);
+    mkdirSync(this.skillsDir, { recursive: true });
+    writeFileSync(filePath, content, 'utf-8');
+    const parsed = this.parseSkillMd(content);
+    if (parsed) this.skills.set(parsed.name, parsed);
+    return filePath;
   }
 
   /**

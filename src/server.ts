@@ -68,7 +68,41 @@ const server = createServer(async (req: any, res: any) => {
   const path = url.pathname;
 
   try {
-    // --- API: etat du cortex ---
+    // --- API: lister les skills ---
+    if (path === '/api/skills' && req.method === 'GET') {
+      return sendJson(res, 200, cortex.skills.list().map(s => ({
+        name: s.name, description: s.description, tags: s.tags ?? [], body: s.body.slice(0, 400),
+      })));
+    }
+
+    // --- API: creer une skill (ecrit le .skill.md + recharge le registry) ---
+    if (path === '/api/skills' && req.method === 'POST') {
+      const raw = await readBody(req);
+      let body: any = {};
+      try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: 'JSON invalide' }); }
+      const { name, description, content, tags } = body;
+      if (!name || !description || !content) {
+        return sendJson(res, 400, { error: 'champs name/description/content requis' });
+      }
+      try {
+        const filePath = cortex.skills.addSkill(name, description, content, Array.isArray(tags) ? tags : []);
+        const count = cortex.skills.reload();
+        return sendJson(res, 201, { ok: true, file: filePath, totalSkills: count });
+      } catch (e: any) {
+        return sendJson(res, 500, { error: e?.message ?? 'echec creation skill' });
+      }
+    }
+
+    // --- API: appliquer une skill (pousse son corps dans le contexte du cortex) ---
+    if (path.startsWith('/api/skills/') && path.endsWith('/apply') && req.method === 'POST') {
+      const name = decodeURIComponent(path.split('/')[3]);
+      const skill = cortex.skills.get(name);
+      if (!skill) return sendJson(res, 404, { error: 'skill inconnue' });
+      // Pousse le corps de la skill dans la memoire de travail => incluse au prochain inject.
+      const { pushToWorkingMemory } = await import('./core/state.js');
+      pushToWorkingMemory(cortex.state, `SKILL APPLIQUEE: ${skill.name}\n${skill.body}`, 'action', 1.0);
+      return sendJson(res, 200, { ok: true, applied: skill.name, description: skill.description });
+    }
     if (path === '/api/state' && req.method === 'GET') {
       const s = cortex.state;
       return sendJson(res, 200, {
