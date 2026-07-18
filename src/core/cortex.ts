@@ -187,7 +187,7 @@ export class Cortex {
     this.tools = new ToolRegistry();
     for (const tool of [
       ...createFilesystemTools(),
-      ...createTerminalTools(),
+      ...createTerminalTools(this.config.sandbox),
       ...createWebTools(),
       ...createVisionTools(),
       ...createSpeechTools(),

@@ -3,12 +3,17 @@
  *
  * Risque: dangerous par défaut. Le cortex doit justifier chaque commande.
  * Timeout configurable. Output tronqué si trop long.
+ *
+ * Confinement (voir src/security/sandbox.ts) :
+ *   - whitelist : refus hors allowlist AVANT exécution
+ *   - docker    : exécution isolée dans un conteneur éphémère (réseau coupe, RO)
+ *   - none      : exécution directe mais commande échappée (anti-injection)
  */
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Tool, ToolResult } from './registry.js';
-import { dockerRunCmd } from '../security/sandbox.js';
+import { dockerRunCmd, wrapForWhitelist, escapeShell } from '../security/sandbox.js';
 
 const execAsync = promisify(exec);
 
@@ -24,8 +29,27 @@ async function run(
   const timeout = (params.timeout as number) ?? 10000;
   const cwd = params.cwd as string | undefined;
 
-  // En stratégie docker, on enveloppe la commande dans un conteneur isolé.
-  const effectiveCommand = strategy === 'docker' ? dockerRunCmd(command) : command;
+  // --- Confinement whitelist : refus hors allowlist AVANT exécution ---
+  if (strategy === 'whitelist') {
+    const res = wrapForWhitelist(command);
+    if (!res.ok) {
+      return {
+        success: false,
+        output: '',
+        error: `refusé (whitelist): ${res.reason}`,
+        data: { command, strategy, blocked: true },
+        durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  // --- Échappement anti-injection ---
+  // La commande est toujours encapsulée via `sh -c "<cmd>"` où <cmd> est
+  // échappée (neutralise $ ` " \). En docker, dockerRunCmd gère le wrapping.
+  const effectiveCommand =
+    strategy === 'docker'
+      ? dockerRunCmd(command)
+      : `sh -c "${escapeShell(command)}"`;
 
   try {
     const { stdout } = await execAsync(effectiveCommand, {
@@ -39,7 +63,7 @@ async function run(
     return {
       success: true,
       output: truncated ? stdout.slice(0, 4000) + '\n...[tronqué]' : stdout,
-      data: { command: effectiveCommand, exitCode: 0, truncated },
+      data: { command: effectiveCommand, exitCode: 0, truncated, strategy },
       durationMs: Date.now() - start,
     };
   } catch (err: any) {
@@ -50,7 +74,7 @@ async function run(
       success: false,
       output: stdout.slice(0, 2000) + '\n[stderr] ' + stderr.slice(0, 2000),
       error: timedOut ? `timeout apres ${timeout}ms` : `exit ${err.code ?? '?'}`,
-      data: { command: effectiveCommand, exitCode: err.code, timedOut },
+      data: { command: effectiveCommand, exitCode: err.code, timedOut, strategy },
       durationMs: Date.now() - start,
     };
   }
