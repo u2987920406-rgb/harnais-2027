@@ -16,3 +16,6 @@ Atlas-v2/
 .DS_Store
 Thumbs.db
 .verify-tmp/
+
+# Chrome debug profile (navigateur souverain CDP)
+.chrome-debug/
