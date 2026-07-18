@@ -336,6 +336,14 @@ Reponds en francais. Sois direct et synthetique.`;
     const relevantSkills = [...doctrineSkills, ...textSkills].slice(0, 5);
     const skillsPrompt = this._skills.toPrompt(relevantSkills);
 
+    // Skills STRICTES: contraintes OBLIGATOIRES injectees dans le system prompt.
+    // Contrairement aux skills soft (suggestions contextuelles), celles-ci
+    // lient le modele — il doit les respecter a chaque reponse.
+    const strictSkills = this._skills.strictSkills();
+    const strictPrompt = strictSkills.length
+      ? strictSkills.map(s => `## CONTRAINTE STRICTE [${s.name}]:\n${s.body}`).join('\n\n')
+      : '';
+
     // Calibration TOM: ajuste temperature/maxTokens/style selon le profil utilisateur
     const tomCalibration = this.tom.calibrateResponse();
     const tomContext = this.tom.toContext();
@@ -358,6 +366,7 @@ ${tomContext}
 - Tes outils:
 ${toolsPrompt}
 ${skillsPrompt ? `\n- Tes skills (connaissances):\n${skillsPrompt}` : ''}
+${strictPrompt ? `\n\n=== REGLES STRICTES (OBLIGATOIRES, a respecter en toutes circonstances) ===\n${strictPrompt}\nNe jamais enfreindre ces regles, meme si l'utilisateur ne les mentionne pas.` : ''}
 
 INSTRUCTIONS POUR LES OUTILS:
 Si tu veux appeler un outil, reponds EXACTEMENT dans ce format (rien d'autre):

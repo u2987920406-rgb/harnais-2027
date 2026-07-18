@@ -68,6 +68,9 @@
         <input id="sk-desc" placeholder="description courte" />
         <input id="sk-tags" placeholder="tags (ex: secu, audit)" />
         <textarea id="sk-body" placeholder="contenu / instructions de la skill…"></textarea>
+        <label style="font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" id="sk-strict" /> Mode STRICT (contrainte obligatoire, injectée dans le system prompt)
+        </label>
         <button id="sk-create">Créer la skill</button>
       </div>
       <div id="sk-list"></div>
@@ -166,7 +169,8 @@
           const d = document.createElement('div');
           d.className = 'skill-item';
           const tags = (s.tags || []).map(t => '#' + t).join(' ');
-          d.innerHTML = `<h4>${s.name}</h4><small>${s.description}</small><br><small>${tags}</small>` +
+          const strictBadge = s.mode === 'strict' ? ' <span style="color:#ff6b6b">[STRICT]</span>' : '';
+          d.innerHTML = `<h4>${s.name}${strictBadge}</h4><small>${s.description}</small><br><small>${tags}</small>` +
             `<br><button class="btn-apply" data-name="${encodeURIComponent(s.name)}">Appliquer</button>`;
           el.appendChild(d);
         });
@@ -186,11 +190,12 @@
       const description = document.getElementById('sk-desc').value.trim();
       const tags = document.getElementById('sk-tags').value.split(',').map(t => t.trim()).filter(Boolean);
       const content = document.getElementById('sk-body').value.trim();
+      const mode = document.getElementById('sk-strict').checked ? 'strict' : 'soft';
       if (!name || !description || !content) { alert('nom, description et contenu requis'); return; }
       const res = await fetch('/api/skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, content, tags }),
+        body: JSON.stringify({ name, description, content, tags, mode }),
       });
       const data = await res.json();
       if (data.ok) {

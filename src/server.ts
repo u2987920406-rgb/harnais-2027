@@ -71,7 +71,7 @@ const server = createServer(async (req: any, res: any) => {
     // --- API: lister les skills ---
     if (path === '/api/skills' && req.method === 'GET') {
       return sendJson(res, 200, cortex.skills.list().map(s => ({
-        name: s.name, description: s.description, tags: s.tags ?? [], body: s.body.slice(0, 400),
+        name: s.name, description: s.description, tags: s.tags ?? [], mode: s.mode ?? 'soft', body: s.body.slice(0, 400),
       })));
     }
 
@@ -80,14 +80,15 @@ const server = createServer(async (req: any, res: any) => {
       const raw = await readBody(req);
       let body: any = {};
       try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: 'JSON invalide' }); }
-      const { name, description, content, tags } = body;
+      const { name, description, content, tags, mode } = body;
       if (!name || !description || !content) {
         return sendJson(res, 400, { error: 'champs name/description/content requis' });
       }
+      const safeMode = mode === 'strict' ? 'strict' : 'soft';
       try {
-        const filePath = cortex.skills.addSkill(name, description, content, Array.isArray(tags) ? tags : []);
+        const filePath = cortex.skills.addSkill(name, description, content, Array.isArray(tags) ? tags : [], safeMode);
         const count = cortex.skills.reload();
-        return sendJson(res, 201, { ok: true, file: filePath, totalSkills: count });
+        return sendJson(res, 201, { ok: true, file: filePath, mode: safeMode, totalSkills: count });
       } catch (e: any) {
         return sendJson(res, 500, { error: e?.message ?? 'echec creation skill' });
       }

@@ -19,6 +19,9 @@ export interface Skill {
   description: string;
   body: string;
   tags?: string[];
+  /** 'strict' = contrainte obligatoire injectee dans le system prompt.
+   *  'soft'   = contexte suggestion, utilise selon pertinence. */
+  mode?: 'strict' | 'soft';
 }
 
 export class SkillRegistry {
@@ -68,11 +71,13 @@ export class SkillRegistry {
     const name = this.extractYaml(frontmatter, 'name') ?? 'unnamed';
     const description = this.extractYaml(frontmatter, 'description') ?? '';
     const tagsStr = this.extractYaml(frontmatter, 'tags');
+    const modeStr = this.extractYaml(frontmatter, 'mode');
     const tags = tagsStr
       ? tagsStr.replace(/[\[\]]/g, '').split(',').map(t => t.trim()).filter(Boolean)
       : undefined;
+    const mode = modeStr === 'strict' ? 'strict' : 'soft';
 
-    return { name, description, body, tags };
+    return { name, description, body, tags, mode };
   }
 
   private extractYaml(yaml: string, key: string): string | undefined {
@@ -104,6 +109,11 @@ export class SkillRegistry {
     return this.skills.get(name);
   }
 
+  /** Retourne les skills marquees strict (contraintes obligatoires). */
+  strictSkills(): Skill[] {
+    return Array.from(this.skills.values()).filter(s => s.mode === 'strict');
+  }
+
   list(): Skill[] {
     return Array.from(this.skills.values());
   }
@@ -121,11 +131,11 @@ export class SkillRegistry {
    * en memoire. Le nom sert de nom de fichier (securise: alphanumerique + -).
    * Retourne le chemin du fichier ecrit.
    */
-  addSkill(name: string, description: string, body: string, tags: string[] = []): string {
+  addSkill(name: string, description: string, body: string, tags: string[] = [], mode: 'strict' | 'soft' = 'soft'): string {
     const safe = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     if (!safe) throw new Error('nom de skill invalide');
     const tagsLine = tags.length ? `[${tags.join(', ')}]` : '[]';
-    const content = `---\nname: ${safe}\ndescription: ${description}\ntags: ${tagsLine}\n---\n\n${body.trim()}\n`;
+    const content = `---\nname: ${safe}\ndescription: ${description}\ntags: ${tagsLine}\nmode: ${mode}\n---\n\n${body.trim()}\n`;
     const filePath = join(this.skillsDir, `${safe}.skill.md`);
     mkdirSync(this.skillsDir, { recursive: true });
     writeFileSync(filePath, content, 'utf-8');

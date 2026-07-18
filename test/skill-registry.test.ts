@@ -42,6 +42,31 @@ test('reload: recharge depuis le disque (persistance)', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('addSkill avec mode strict: marque la skill et strictSkills() la retrouve', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harnais-skill-'));
+  const reg = new SkillRegistry(dir);
+  reg.addSkill('regle-dure', 'doit toujours', 'Repond en francais.', ['lang'], 'strict');
+  const created = reg.get('regle-dure');
+  assert.equal(created!.mode, 'strict');
+  const strict = reg.strictSkills();
+  assert.equal(strict.length, 1);
+  assert.equal(strict[0].name, 'regle-dure');
+  // une skill soft normale ne doit pas apparaitre dans strictSkills
+  reg.addSkill('souple', 'suggestion', 'Optionnel.', [], 'soft');
+  assert.equal(reg.strictSkills().length, 1);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('parseSkillMd: mode strict dans le frontmatter est lu', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harnais-skill-'));
+  const reg = new SkillRegistry(dir);
+  const file = reg.addSkill('x', 'd', 'c', ['t'], 'strict');
+  // nouvelle instance recharge depuis le disque
+  const reg2 = new SkillRegistry(dir);
+  reg2.reload();
+  assert.equal(reg2.get('x')!.mode, 'strict');
+  rmSync(dir, { recursive: true, force: true });
+});
 test('addSkill puis reload: le total reste stable (pas de doublon)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'harnais-skill-'));
   const reg = new SkillRegistry(dir);
