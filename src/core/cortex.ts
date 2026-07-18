@@ -136,17 +136,17 @@ export class Cortex {
 
   /** Liste les approbations en attente (pour l'UI). */
   pendingApprovals(): { id: string; tool: string; reason: string }[] {
-    return Array.from(this._pendingApprovals.entries()).map(([id, a]) => ({ id, tool: a.tool, reason: a.reason }));
+    return this.approvalChannel && 'pendingForUI' in this.approvalChannel
+      ? (this.approvalChannel as any).pendingForUI()
+      : [];
   }
 
-  /** Resout une approbation en attente (UI/Telegram). */
+  /** Resout une approbation en attente (UI/Telegram) via le canal. */
   resolveApproval(id: string, ok: boolean): void {
-    const resolver = this._pendingApprovals.get(id);
-    if (resolver) { this._pendingApprovals.delete(id); resolver.resolve(ok); }
+    if (this.approvalChannel && 'resolve' in this.approvalChannel) {
+      (this.approvalChannel as any).resolve(id, ok);
+    }
   }
-
-  private _pendingApprovals: Map<string, { tool: string; reason: string; resolve: (ok: boolean) => void }> = new Map();
-  private _approvalSeq = 0;
 
   /** Demande validation via le canal connecte. Fail-safe: refuse si aucun canal. */
   private async requestApproval(tool: string, params: Record<string, any>, reason: string): Promise<boolean> {
@@ -154,12 +154,9 @@ export class Cortex {
       console.log(`[Cortex] Approbation REFUSEE (fail-safe: aucun canal d'approbation connecte) -> ${tool}`);
       return false;
     }
-    const id = `ap${++this._approvalSeq}`;
-    const promise = new Promise<boolean>((resolve) => {
-      this._pendingApprovals.set(id, { tool, reason, resolve });
-    });
-    console.log(`[Cortex] Approbation REQUISE (${id}): ${tool} — ${reason}`);
-    return promise;
+    // Delegue au canal (UI/Telegram) qui genere son propre id et gère la promise.
+    console.log(`[Cortex] Approbation REQUISE: ${tool} — ${reason}`);
+    return this.approvalChannel.ask(tool, params, reason);
   }
 
   state: CortexState;
