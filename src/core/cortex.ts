@@ -38,6 +38,9 @@ import { SkillRegistry } from './skill.js';
 import { budgetSummary, resetBudget } from './budget.js';
 import { makeCompositeVerifier, type Artifact } from '../verify/verifier.js';
 import { WorkflowEngine, formatTrace, type WorkflowDef } from './workflow.js';
+import { Scheduler } from './scheduler.js';
+import { MCPBridge, type MCPConfig } from '../tools/mcp.js';
+import { ProcessRegistry } from '../tools/process-registry.js';
 import { NayaQABridge } from '../bridge/nayaqa.js';
 import { NayaOSBridge } from '../bridge/nayaos.js';
 import { UIServer } from '../ui/server.js';
@@ -74,6 +77,7 @@ export interface CortexConfig {
   governanceMode: GovernanceMode;   // mode par defaut au demarrage
   sandbox: SandboxStrategy;         // isolation shell_exec
   allowDangerous: boolean;          // false => outils dangerous bloques hors permission
+  mcpServers?: MCPConfig[];         // serveurs MCP externes (comme Hermes) à charger au démarrage
 }
 
 const DEFAULT_CONFIG: CortexConfig = {
@@ -103,6 +107,9 @@ export class Cortex {
   private verifier: ReturnType<typeof makeCompositeVerifier>;
   private workflowEngine: WorkflowEngine;
   private nayaqa: NayaQABridge;
+  private scheduler: Scheduler;
+  private mcpBridges: MCPBridge[] = [];
+  private _procs: ProcessRegistry = new ProcessRegistry();
   private _nayaos: NayaOSBridge;
   private _ui: UIServer | null = null;
   private governance: Governance;
@@ -121,6 +128,7 @@ export class Cortex {
   get skills(): SkillRegistry { return this._skills; }
   /** Acces public en lecture au pont NayaOS. */
   get nayaos(): NayaOSBridge { return this._nayaos; }
+  get procs(): ProcessRegistry { return this._procs; }
 
   /** Demarre le serveur UI (dashboard web). */
   async startUI(port = 7891, host = '127.0.0.1'): Promise<string> {
@@ -206,6 +214,23 @@ export class Cortex {
     }
     this.spawner.setTools(this.tools);
 
+    // Ponts MCP externes (comme Hermes) — chargés au démarrage, non bloquant.
+    // Chaque serveur expose ses outils dans le ToolRegistry du cortex.
+    this.mcpBridges = [];
+    for (const cfg of this.config.mcpServers ?? []) {
+      const bridge = new MCPBridge(cfg);
+      bridge.connect()
+        .then(async () => {
+          const mcpTools = await bridge.toTools();
+          for (const t of mcpTools) this.tools.register(t);
+          console.log(`[Cortex] MCP '${cfg.name ?? 'mcp'}' : ${mcpTools.length} outil(s) chargé(s)`);
+        })
+        .catch((err) => {
+          console.error(`[Cortex] MCP '${cfg.name ?? 'mcp'}' échec: ${err.message}`);
+        });
+      this.mcpBridges.push(bridge);
+    }
+
     // Charge les skills
     this._skills = new SkillRegistry();
     this._skills.load();
@@ -224,6 +249,10 @@ export class Cortex {
 
     // Pont NayaQA — lit les verdicts et enrichit le graphe
     this.nayaqa = new NayaQABridge(this._graph);
+
+    // Planificateur récurrent (type cron) — jobs en mode idle
+    this.scheduler = new Scheduler();
+    this.scheduler.setRuntime(this.spawner, this._graph);
   }
 
   // --- Lifecycle ---
@@ -272,9 +301,13 @@ export class Cortex {
     // Canal d'approbation Telegram (si token + chat configurés)
     const tgToken = process.env.TELEGRAM_BOT_TOKEN;
     const tgChat = process.env.RAF_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID;
+    // Durcissement expediteur (cf. telegram-approval.ts) : par defaut on suppose un
+    // chat prive (approverUserId = chatId, comportement historique). En groupe,
+    // TELEGRAM_APPROVER_USER_ID doit pointer l'id Telegram exact de Raf.
+    const tgApprover = process.env.TELEGRAM_APPROVER_USER_ID;
     if (tgToken && tgChat) {
       const { TelegramApprovalChannel } = await import('../security/telegram-approval.js');
-      this.approvalChannel = new TelegramApprovalChannel({ token: tgToken, chatId: tgChat });
+      this.approvalChannel = new TelegramApprovalChannel({ token: tgToken, chatId: tgChat, approverUserId: tgApprover });
       console.log(`[Cortex] Canal d'approbation Telegram connecté (chat ${tgChat}).`);
     } else {
       console.log(`[Cortex] Pas de canal Telegram (token/chat manquants) — fail-safe: approbation REFUSÉE par défaut.`);
@@ -290,6 +323,8 @@ export class Cortex {
   async stop(): Promise<void> {
     this.running = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    this._procs.killAll();
+    for (const b of this.mcpBridges) b.disconnect();
     if (this._ui) await this._ui.stop();
     this.saveState();
     this._graph.save();
@@ -589,6 +624,18 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
             } else {
               verifyNote = '\nVERIFICATION: OK — fichier sain.';
             }
+          } else if (toolName === 'shell_exec' && result.success) {
+            // GAP-4 (GAPS.md) : la verification post-action ne couvrait que file_write.
+            // Un shell_exec "success" (exit 0) peut quand meme contenir un message
+            // d'echec crasse dans sa sortie (ex. wrapper qui avale le code retour) —
+            // on grep un motif d'erreur connu et on le signale, sans jamais bloquer
+            // (le Cortex reste fail-open, comme le verifier file_write ci-dessus).
+            const crashPattern = /(command not found|EACCES|Permission denied|fatal:|not recognized as an internal or external command|No such file or directory)/i;
+            const m = result.output.match(crashPattern);
+            if (m) {
+              verifyNote = `\nVERIFICATION: KO — la sortie contient un motif d'erreur ("${m[0]}") malgre exit success. Verifie la commande.`;
+              console.log(`[Cortex] Verification KO (shell_exec): motif "${m[0]}"`);
+            }
           }
 
           toolResults.push(`Resultat de ${toolName}:\n${result.output.slice(0, 3000)}${verifyNote}`);
@@ -650,6 +697,8 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           if (this.state.cycles % this.config.idleThoughtInterval === 0) {
             await this.idleThought();
           }
+          // Planificateur : exécute les jobs récurrents dus (type cron)
+          await this.runDueJobs();
           break;
         case 'sleep':
           if (this.state.cycles % this.config.sleepInterval === 0) {
@@ -695,6 +744,17 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
     const wmContext = workingMemoryToContext(this.state, 5);
     const stateSummary = stateToSummary(this.state);
 
+    // GAP-2 (GAPS.md) : processInput injecte deja les skills (doctrine + match texte),
+    // idleThought ne le faisait pas. Pas d'input utilisateur ici -> on matche sur le
+    // focus courant (proxy le plus proche d'un "sujet actuel" en arriere-plan). Reste
+    // leger (max 2 skills matches, comme demande) pour ne pas alourdir le prompt meta.
+    const idleDoctrineSkills = this._skills.byTags(['doctrine']);
+    const idleTextSkills = this.state.currentFocus
+      ? this._skills.byText(this.state.currentFocus).filter(s => !idleDoctrineSkills.includes(s))
+      : [];
+    const idleRelevantSkills = [...idleDoctrineSkills, ...idleTextSkills].slice(0, 2);
+    const idleSkillsPrompt = this._skills.toPrompt(idleRelevantSkills);
+
     const prompt = `Tu es le Cortex en mode arrière-plan. L'utilisateur n'est pas là.
 Fais une pensée productive. Options:
 1. Explore une hypothèse active ou crées-en une nouvelle
@@ -710,6 +770,7 @@ ${wmContext}
 
 Graphe:
 ${graphContext}
+${idleSkillsPrompt ? `\nSKILLS DISPONIBLES:\n${idleSkillsPrompt}` : ''}
 
 Réponds en JSON: {"thought": "...", "type": "hypothesis|anticipation|pattern|observation", "action": "create_hypothesis|spawn_thread|consolidate|note"}`;
 
@@ -867,5 +928,36 @@ ${summary}
 Graphe: ${JSON.stringify(graphStats)}
 Modèles: ${JSON.stringify(bridgeStats, null, 2)}
 ========================`;
+  }
+
+  // --- Planificateur récurrent (type cron Hermes) ---
+
+  /** Accès public au planificateur (lecture / ajout de jobs). */
+  get schedulerRef(): Scheduler { return this.scheduler; }
+
+  /**
+   * Ajoute un job récurrent. Raccourci pratique.
+   * schedule ex: { kind:'every', minutes:30 } ou { kind:'daily', atHour:9 }.
+   */
+  addScheduledJob(
+    name: string,
+    schedule: { kind: 'every'; minutes: number } | { kind: 'daily'; atHour: number },
+    prompt: string,
+    opts: { context?: string; skills?: string[] } = {}
+  ): string {
+    return this.scheduler.addJob(name, schedule, prompt, opts);
+  }
+
+  /** Exécute tous les jobs dus (appelé par tickLoop en mode idle). */
+  private async runDueJobs(): Promise<void> {
+    const due = this.scheduler.dueJobs();
+    if (due.length === 0) return;
+    for (const job of due) {
+      try {
+        await this.scheduler.run(job);
+      } catch (err: any) {
+        console.error(`[Cortex] Job ${job.name} a échoué: ${err.message}`);
+      }
+    }
   }
 }

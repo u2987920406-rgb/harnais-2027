@@ -27,6 +27,7 @@ export interface SpawnConfig {
   maxTokens?: number;
   temperature?: number;
   modelOverride?: string;
+  tools?: string[];       // scope d'outils autorisés (comme enabled_toolsets) ; undefined = tous
 }
 
 export interface SpawnResult {
@@ -53,9 +54,16 @@ export class Spawner {
 
   /**
    * Injecte le registre d'outils pour que les agents ephemeres puissent agir.
+   * scope = outils autorisés par défaut (comme enabled_toolsets) ; undefined = tous.
    */
-  setTools(tools: ToolRegistry): void {
-    this.tools = tools;
+  setTools(tools: ToolRegistry, scope?: string[]): void {
+    this.tools = scope ? tools.scoped(scope) : tools;
+  }
+
+  /** Scope d'outils par défaut pour les spawns suivants. */
+  private defaultToolScope: string[] | undefined = undefined;
+  setToolScope(scope: string[] | undefined): void {
+    this.defaultToolScope = scope;
   }
 
   /**
@@ -68,10 +76,12 @@ export class Spawner {
 
   /**
    * Construit le prompt d'outils pour un sous-agent.
+   * scope = noms d'outils autorisés (comme enabled_toolsets) ; undefined = tous.
    */
-  private toolsPrompt(): string {
+  private toolsPrompt(scope?: string[]): string {
     if (!this.tools) return '[Aucun outil]';
-    return this.tools.toPrompt();
+    const reg = scope ? this.tools.scoped(scope) : this.tools;
+    return reg.toPrompt();
   }
 
   /**
@@ -123,8 +133,14 @@ Maximum 3 processus. Sois précis et concis.`;
     console.log(`[Spawner] Spawn: ${config.role} (${config.mode})`);
 
     try {
+      // Scope d'outils : par spawn (config.tools) sinon par défaut du spawner.
+      // Équivalent enabled_toolsets (Hermes) : isole le sous-agent du reste.
+      const scope = config.tools ?? this.defaultToolScope;
+      const toolsCtx = this.toolsPrompt(scope);
+      const systemWithTools = `${config.systemPrompt}\n\nOUTILS DISPONIBLES (scopés):\n${toolsCtx}`;
+
       const response = await this.bridge.think(config.taskPrompt, config.mode, {
-        system: config.systemPrompt,
+        system: systemWithTools,
         temperature: config.temperature ?? 0.7,
         maxTokens: config.maxTokens ?? 2048,
         modelOverride: config.modelOverride,
@@ -175,6 +191,58 @@ Maximum 3 processus. Sois précis et concis.`;
     const successCount = results.filter(r => r.success).length;
     console.log(`[Spawner] ${successCount}/${configs.length} réussis`);
     return results;
+  }
+
+  /**
+   * Délégation par lot avec concurrence limitée — équivalent de `delegate_task`
+   * (Hermes). Prend des buts indépendants, les traite N à la fois (défaut 3),
+   * chaque tâche dans son propre contexte isolé, et renvoie résultats + résumé.
+   *
+   * La concurrence bornée évite de saturer Ollama si le lot est grand
+   * (contrairement à spawnParallel qui lance tout en même temps).
+   */
+  async dispatch(
+    goals: string[],
+    opts: { concurrency?: number; context?: string; mode?: CognitiveMode } = {}
+  ): Promise<{ results: SpawnResult[]; summary: string }> {
+    const concurrency = Math.max(1, opts.concurrency ?? 3);
+    const mode = opts.mode ?? 'general';
+
+    const configs: SpawnConfig[] = goals.map((g, i) => ({
+      role: `batch-${i}-${g.slice(0, 24).replace(/\W+/g, '-')}`,
+      task: g,
+      mode,
+      systemPrompt: `Tu es un agent cognitif autonome travaillant en lot parallèle. ` +
+        `Contexte partagé: ${opts.context ?? 'aucun'}. Sois concis et direct.`,
+      taskPrompt: `But: ${g}`,
+      maxTokens: 1024,
+      temperature: 0.7,
+    }));
+
+    const results: SpawnResult[] = new Array(configs.length);
+    let idx = 0;
+    const worker = async (): Promise<void> => {
+      while (idx < configs.length) {
+        const myIdx = idx++;
+        results[myIdx] = await this.spawn(configs[myIdx]);
+      }
+    };
+    const workers = Array.from(
+      { length: Math.min(concurrency, configs.length) },
+      () => worker()
+    );
+    await Promise.all(workers);
+
+    const ok = results.filter(r => r.success).length;
+    const summary =
+      `[Dispatch] ${ok}/${results.length} réussis (concurrency=${concurrency}).\n` +
+      results
+        .map(r =>
+          `- ${r.role}: ${r.success ? r.output.slice(0, 120) : 'ECHEC ' + (r.error ?? '')}`
+        )
+        .join('\n');
+    console.log(summary);
+    return { results, summary };
   }
 
   /**

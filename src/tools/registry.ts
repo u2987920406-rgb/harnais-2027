@@ -55,6 +55,21 @@ export class ToolRegistry {
   }
 
   /**
+   * Renvoie un registre FILTRÉ ne contenant que les outils nommés.
+   * Équivalent d'`enabled_toolsets` (Hermes) : isole un sous-agent
+   * (ex: "recherche") du terminal dangereux. L'exécution passe par le
+   * registre parent pour rester centralisée (gouvernance/sandbox préservés).
+   */
+  scoped(names: string[]): ToolRegistry {
+    const allow = new Set(names);
+    const sub = new ToolRegistry();
+    for (const t of this.list()) {
+      if (allow.has(t.name)) sub.register(t);
+    }
+    return sub;
+  }
+
+  /**
    * Génère la description des outils pour le prompt du modèle.
    * Format compact — pas un JSON Schema complet, juste ce que le modèle
    * doit savoir pour appeler l'outil correctement.
