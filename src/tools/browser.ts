@@ -122,7 +122,14 @@ async function getCdp(): Promise<CDPClient> {
 async function ensurePage(): Promise<CDPClient> {
   const cdp = await getCdp();
   if (!state.targetId) {
-    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    // BUG FIX: on attache le PREMIER target deja ouvert (la fenetre visible
+    // lancee avec about:blank), au lieu d'en creer un nouveau. Sinon avec
+    // --new-window la navigation se fait dans un onglet cache non affiche,
+    // et l'utilisateur voit une fenetre vide (DOM vide).
+    const { targetInfos } = await cdp.send('Target.getTargets');
+    const visible = targetInfos.find((t: any) => t.type === 'page' && !t.url.startsWith('devtools://'));
+    const targetId = visible?.targetId;
+    if (!targetId) throw new Error('Aucune fenetre Chrome disponible');
     state.targetId = targetId;
     await cdp.attachTarget(targetId);
   }
@@ -136,8 +143,8 @@ export function createBrowserTools(): Tool[] {
       const cdp = await ensurePage();
       await cdp.send('Page.enable', {}, cdp.session);
       await cdp.send('Page.navigate', { url: params.url }, cdp.session);
-      // attend chargement
-      await new Promise(r => setTimeout(r, 1500));
+      // attend chargement (2.5s pour laisser le DOM se peupler, meme sites lourds)
+      await new Promise(r => setTimeout(r, 2500));
       const { result } = await cdp.send('Runtime.evaluate', {
         expression: 'document.title', returnByValue: true,
       }, cdp.session);
