@@ -143,8 +143,15 @@ export function createBrowserTools(): Tool[] {
       const cdp = await ensurePage();
       await cdp.send('Page.enable', {}, cdp.session);
       await cdp.send('Page.navigate', { url: params.url }, cdp.session);
-      // attend chargement (2.5s pour laisser le DOM se peupler, meme sites lourds)
-      await new Promise(r => setTimeout(r, 2500));
+      // Attend que la page soit chargee (readyState complete) avec un timeout,
+      // puis un delai supplementaire pour les sites qui rendent en JS (Google).
+      try {
+        await cdp.send('Page.enable', {}, cdp.session);
+        await new Promise(r => setTimeout(r, 4000));
+        await cdp.send('Runtime.evaluate', {
+          expression: 'document.readyState',
+        }, cdp.session);
+      } catch { /* on continue quand meme */ }
       const { result } = await cdp.send('Runtime.evaluate', {
         expression: 'document.title', returnByValue: true,
       }, cdp.session);
@@ -156,8 +163,19 @@ export function createBrowserTools(): Tool[] {
     const start = Date.now();
     try {
       const cdp = await ensurePage();
+      // Snapshot cible: on remonte les liens de resultats utiles (href externe
+      // vers un vrai site, pas l'UI Google), priorises devant les liens d'UI.
+      // Limite augmentee pour capter les resultats de recherche (souvent bas
+      // dans le DOM apres le carrousel Google).
+      const lim = Number(params.limit ?? 60);
       const { result } = await cdp.send('Runtime.evaluate', {
-        expression: `(() => { const els=[...document.querySelectorAll('a,button,input,textarea,select,h1,h2,h3,p')]; return els.slice(0,${Number(params.limit ?? 40)}).map(e=>({t:e.tagName, txt:(e.textContent||'').trim().slice(0,80), href:e.href||'', name:e.name||e.id||''})); })()`,
+        expression: `(() => {
+          const all=[...document.querySelectorAll('a,button,input,textarea,select,h1,h2,h3,p')];
+          const links=all.filter(e => e.tagName==='A' && e.href && !e.href.startsWith('https://www.google.com') && !e.href.startsWith('https://support.google') && !e.href.startsWith('javascript:'));
+          const rest=all.filter(e => !(e.tagName==='A' && e.href));
+          const els=[...links, ...rest].slice(0,${lim});
+          return els.map(e=>({t:e.tagName, txt:(e.textContent||'').trim().slice(0,90), href:e.href||'', name:e.name||e.id||''}));
+        })()`,
         returnByValue: true,
       }, cdp.session);
       const items = result?.value ?? [];
