@@ -50,13 +50,69 @@ test('TelegramApprovalChannel: ask valide si réponse ✅', async () => {
         ok: true, status: 200,
         json: async () => ({
           ok: true,
-          result: [{ update_id: 1, message: { message_id: 11, chat: { id: '123' }, text: '✅' } }],
+          result: [{ update_id: 1, message: { message_id: 11, chat: { id: '123' }, from: { id: 123 }, text: '✅' } }],
         }),
       };
     }
     return { ok: true, status: 200, json: async () => ({ ok: true, result: [] }) };
   };
   const ch = new TelegramApprovalChannel({ token: 'x', chatId: '123', pollTimeoutMs: 2000 });
+  const ok = await ch.ask('shell_exec', { command: 'ls' }, 'test');
+  assert.equal(ok, true);
+  (global as any).fetch = origFetch;
+});
+
+test('TelegramApprovalChannel: ignore une reponse ✅ d\'un AUTRE membre du chat (durcissement expediteur)', async () => {
+  // Meme chat.id que l'approverUserId attendu, mais from.id different : un
+  // membre non-autorise (cas GROUPE) ne doit jamais pouvoir valider a la place
+  // de Raf. Sans ce test, le durcissement pourrait regresser silencieusement.
+  let call = 0;
+  const origFetch = global.fetch;
+  (global as any).fetch = async (_url: string, opts: any) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    if (body && body.text) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 10 } }) };
+    }
+    call++;
+    if (call === 1) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true,
+          // meme chat (groupe), mais expediteur = 999 != approverUserId (123)
+          result: [{ update_id: 1, message: { message_id: 11, chat: { id: '123' }, from: { id: 999 }, text: '✅' } }],
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: [] }) };
+  };
+  const ch = new TelegramApprovalChannel({ token: 'x', chatId: '123', approverUserId: '123', pollTimeoutMs: 300 });
+  const ok = await ch.ask('shell_exec', { command: 'rm -rf' }, 'test');
+  assert.equal(ok, false, 'un message venant d\'un autre expediteur ne doit jamais approuver');
+  (global as any).fetch = origFetch;
+});
+
+test('TelegramApprovalChannel: approverUserId explicite honore une reponse du bon expediteur en groupe', async () => {
+  let call = 0;
+  const origFetch = global.fetch;
+  (global as any).fetch = async (_url: string, opts: any) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    if (body && body.text) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 10 } }) };
+    }
+    call++;
+    if (call === 1) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true,
+          result: [{ update_id: 1, message: { message_id: 11, chat: { id: '-100groupe' }, from: { id: 777 }, text: '✅' } }],
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: [] }) };
+  };
+  const ch = new TelegramApprovalChannel({ token: 'x', chatId: '-100groupe', approverUserId: '777', pollTimeoutMs: 2000 });
   const ok = await ch.ask('shell_exec', { command: 'ls' }, 'test');
   assert.equal(ok, true);
   (global as any).fetch = origFetch;

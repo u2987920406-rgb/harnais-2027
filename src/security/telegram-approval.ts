@@ -14,6 +14,16 @@ export interface TelegramApprovalOpts {
   token: string;
   chatId: string;
   pollTimeoutMs?: number;
+  /**
+   * Identifiant Telegram (`msg.from.id`) de la SEULE personne autorisee a
+   * repondre a une demande d'approbation. Sans cette valeur, seul `chat.id`
+   * etait verifie — suffisant en chat prive (chat.id == l'id de l'unique
+   * interlocuteur) mais insuffisant si le bot tourne dans un GROUPE : n'importe
+   * quel membre du groupe pouvait alors approuver/refuser a la place de Raf.
+   * Defaut : `chatId` (hypothese chat prive, comportement historique inchange
+   * dans ce cas precis puisque from.id == chat.id en 1-a-1 Telegram).
+   */
+  approverUserId?: string;
 }
 
 const API = (token: string, method: string, q = '') =>
@@ -22,6 +32,7 @@ const API = (token: string, method: string, q = '') =>
 export class TelegramApprovalChannel implements ApprovalChannel {
   private token: string;
   private chatId: string;
+  private approverUserId: string;
   private pollTimeoutMs: number;
   private lastUpdateId = 0;
   private offset = 0;
@@ -29,6 +40,7 @@ export class TelegramApprovalChannel implements ApprovalChannel {
   constructor(opts: TelegramApprovalOpts) {
     this.token = opts.token;
     this.chatId = opts.chatId;
+    this.approverUserId = opts.approverUserId ?? opts.chatId;
     this.pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
   }
 
@@ -91,6 +103,9 @@ export class TelegramApprovalChannel implements ApprovalChannel {
         const msg = upd.message;
         if (!msg || msg.message_id <= sinceMessageId) continue;
         if (String(msg.chat.id) !== this.chatId) continue;
+        // Durcissement : verifie l'EXPEDITEUR, pas seulement le chat (utile en
+        // groupe — en chat prive, from.id == chat.id, donc sans effet ici).
+        if (String(msg.from?.id ?? '') !== this.approverUserId) continue;
         const text = (msg.text ?? '').trim();
         if (text.includes('✅') || /^oui|yes|ok|valide/i.test(text)) return true;
         if (text.includes('❌') || /^non|no|refuse/i.test(text)) return false;

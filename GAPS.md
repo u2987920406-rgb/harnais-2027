@@ -26,31 +26,41 @@ desc: NayaQABridge.readVerdict(projectDir) existe mais n'est jamais appele auto.
 verification: npm run build; node dist/index.js + /quit; pas d'erreur au demarrage.
 
 ## GAP-2 — Skills injectes dans idleThought
-status: pending
+status: done (2026-07-19)
 risk: low
 file: src/core/cortex.ts (idleThought)
 desc: processInput injecte deja les skills (doctrine + match texte). idleThought ne le fait pas.
   Dans idleThought, charger this.skills.byText(currentThought) et les ajouter au prompt
   du modele (section "SKILLS DISPONIBLES"). Garder legage: max 2 skills matches.
-verification: npm run build; grep "SKILLS" dans la sortie idle (ou /introspect memoire).
+verification: FAIT — idleThought charge byTags(['doctrine']) + byText(state.currentFocus)
+  (pas d'input direct en idle, le focus courant sert de proxy), plafonne a 2, injecte une
+  section "SKILLS DISPONIBLES" dans le prompt meta. Test dedie (cortex.test.ts) : la section
+  apparait bien dans l'appel bridge.think(mode='meta'). npm run build + npm test 155/155 verts.
 
 ## GAP-3 — TOM branche dans processInput
-status: pending
+status: done (deja fait avant cet audit, jamais mis a jour ici)
 risk: low
 file: src/core/cortex.ts (processInput) + src/cognition/theory-of-mind.ts
 desc: TheoryOfMind.calibrateResponse(state) existe mais processInput utilise temperature/maxTokens fixes.
   Appeler this.tom.calibrateResponse(this.state) et utiliser le resultat (temperature, maxTokens,
   style) dans l'appel this.bridge.think(...). Ne pas casser le schema think().
-verification: npm run build; node dist/index.js + /quit; pas d'erreur.
+verification: VERIFIE (2026-07-19) — processInput appelle deja tom.calibrateResponse() et
+  tom.toContext(), et passe temperature/maxTokens/style a CHAQUE round de la boucle de
+  tool-calling (debate ET think). Le code etait deja correct ; seul ce fichier GAPS.md
+  etait perime — corrige un cran, pas de changement de code necessaire.
 
 ## GAP-4 — Verifier couvre aussi shell_exec
-status: pending
+status: done (2026-07-19)
 risk: low
 file: src/core/cortex.ts (boucle tool-calling)
 desc: La verification post-action ne couvre que file_write. Ajouter: si toolName==='shell_exec'
   et result.success, verifier que le resultat ne contient pas de pattern d'erreur crasse
   (ex: "command not found", "EACCES", "Permission denied", "fatal:"). Si pattern => verifyNote KO.
-verification: npm run build; node dist/index.js + /quit; pas d'erreur.
+verification: FAIT — branche else-if sur shell_exec+success, regex sur le pattern d'erreur
+  crasse (command not found/EACCES/Permission denied/fatal:/not recognized/No such file or
+  directory), verifyNote "VERIFICATION: KO" injecte dans la conversation si match. 2 tests
+  dedies (cortex.test.ts, avec/sans motif d'erreur, governanceMode:'auto' pour isoler du
+  canal d'approbation). npm run build + npm test 155/155 verts.
 
 ## GAP-5 — Unifier les deux systemes de budget
 status: pending

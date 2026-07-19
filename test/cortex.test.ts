@@ -72,6 +72,68 @@ test('inject: appel d outil (file via TOOL/PARAMS) est execute puis reponse fina
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('inject: shell_exec success avec motif d erreur dans la sortie -> VERIFICATION: KO (GAP-4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harnais-cortex-'));
+  const bridge = makeMockBridge((prompt: string) => {
+    if (prompt.includes('Resultat de')) {
+      return /VERIFICATION: KO/.test(prompt) ? 'verification echouee detectee' : 'tout va bien';
+    }
+    if (prompt.startsWith('lance une commande')) {
+      return 'TOOL: shell_exec\nPARAMS: {"command": "echo command not found"}';
+    }
+    return 'neutral';
+  });
+  const graph = new KnowledgeGraph(join(dir, 'graph.json'));
+  const cortex = new Cortex(bridge, graph, {
+    statePath: join(dir, 'state.json'),
+    tickIntervalMs: 999999,
+    governanceMode: 'auto', // bypass l'approbation pour isoler le comportement du verifier
+  });
+  await cortex.inject('lance une commande');
+  const call = bridge.calls.find(c => c.prompt.includes('Resultat de'));
+  assert.ok(call, 'un round de suivi doit avoir ete declenche apres le shell_exec');
+  assert.match(call!.prompt, /VERIFICATION: KO/);
+  assert.match(call!.prompt, /command not found/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('inject: shell_exec success sans motif d erreur -> pas de VERIFICATION KO (GAP-4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harnais-cortex-'));
+  const bridge = makeMockBridge((prompt: string) => {
+    if (prompt.includes('Resultat de')) return 'ok recu';
+    if (prompt.startsWith('lance une commande propre')) {
+      return 'TOOL: shell_exec\nPARAMS: {"command": "echo tout va bien"}';
+    }
+    return 'neutral';
+  });
+  const graph = new KnowledgeGraph(join(dir, 'graph.json'));
+  const cortex = new Cortex(bridge, graph, {
+    statePath: join(dir, 'state.json'),
+    tickIntervalMs: 999999,
+    governanceMode: 'auto',
+  });
+  await cortex.inject('lance une commande propre');
+  const call = bridge.calls.find(c => c.prompt.includes('Resultat de'));
+  assert.ok(call);
+  assert.doesNotMatch(call!.prompt, /VERIFICATION: KO/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('idleThought: injecte une section SKILLS DISPONIBLES quand un focus est present (GAP-2)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'harnais-cortex-'));
+  const bridge = makeMockBridge(() => '{"thought": "rien de special", "type": "observation", "action": "note"}');
+  const graph = new KnowledgeGraph(join(dir, 'graph.json'));
+  const cortex = new Cortex(bridge, graph, { statePath: join(dir, 'state.json'), tickIntervalMs: 999999 });
+  // Un focus qui matche un skill par texte doit faire apparaitre la section dans le prompt meta.
+  cortex.state.currentFocus = cortex.skills.list()[0]?.tags[0] ?? 'securite';
+  await cortex.idleThought();
+  const call = bridge.calls.find(c => c.mode === 'meta');
+  assert.ok(call, 'idleThought doit appeler bridge.think en mode meta');
+  // Au minimum les skills "doctrine" doivent apparaitre (toujours charges), meme sans match texte.
+  assert.match(call!.prompt, /SKILLS DISPONIBLES/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('runWorkflow: pipeline transform simple', async () => {
   const { cortex, dir } = makeCortex();
   const def: WorkflowDef = {

@@ -5,7 +5,7 @@
  *  - injecte 2 verdicts rouges (2 projets, meme faille security) dans le graphe
  *  - lance le scenario sur un projet neuf
  *  - detecte le pattern, construit l'avertissement
- *  - si NayaOS (port 3001) est EN LIGNE: injecte reellement l'avertissement
+ *  - si NayaOS/MangoOS (port 3000) est EN LIGNE: injecte reellement l'avertissement
  *    si HORS LIGNE: dry-run, affiche ce qui serait envoye
  *
  * Lance: npm run smoke:scenario
@@ -21,7 +21,7 @@ import { SelfImprovementScenario, formatScenario } from '../../src/scenarios/sel
 async function main() {
   const dir = mkdtempSync(join(tmpdir(), 'harnais-scn-live-'));
   const graph = new KnowledgeGraph(join(dir, 'graph.json'));
-  const nayaos = new NayaOSBridge(graph); // NAYAOS_URL ou localhost:3001
+  const nayaos = new NayaOSBridge(graph); // NAYAOS_URL ou localhost:3000
   const nayaqa = new NayaQABridge(graph);
 
   // --- Seed: 2 projets ont echoue sur la meme faille security ---

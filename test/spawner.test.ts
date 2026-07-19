@@ -57,6 +57,23 @@ test('spawnPipeline: enchaine et injecte les resultats precedents', async () => 
   assert.ok(results[1].success);
 });
 
+test('dispatch: delégation par lot avec concurrence limitée', async () => {
+  const bridge = makeMockBridge((prompt) => `rep:${prompt.slice(4, 12)}`);
+  const graph = new KnowledgeGraph();
+  const spawner = new Spawner(bridge, graph);
+  const { results, summary } = await spawner.dispatch(
+    ['but un', 'but deux', 'but trois', 'but quatre', 'but cinq'],
+    { concurrency: 2, context: 'test' }
+  );
+  // Tous les buts traités, meme avec concurrence < taille du lot
+  assert.equal(results.length, 5);
+  assert.ok(results.every(r => r.success));
+  // Résumé présent et mentionne le taux de réussite
+  assert.match(summary, /Dispatch\] 5\/5 réussis/);
+  // Chaque but a enregistré un noeud episode dans le graphe
+  assert.ok(graph.query({ type: 'episode' }).length >= 5);
+});
+
 test('getActiveSpawns: vide apres completion', async () => {
   const bridge = makeMockBridge(() => 'ok');
   const spawner = new Spawner(bridge, new KnowledgeGraph());

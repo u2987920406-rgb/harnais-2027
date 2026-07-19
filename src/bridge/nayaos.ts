@@ -1,7 +1,8 @@
 /**
- * NayaOS Bridge — Pont HTTP vers l'API REST de NayaOS.
+ * NayaOS Bridge — Pont HTTP vers l'API REST de MangoOS (le repo appelle
+ * MangoOS "NayaOS" en interne — confirme par Raf le 2026-07-19).
  *
- * Le harnais peut LIRE l'etat de NayaOS et le COMMANDER.
+ * Le harnais peut LIRE l'etat de MangoOS et le COMMANDER.
  *
  * LECTURE:
  *  - GET /api/projects — liste les projets
@@ -16,6 +17,14 @@
  *  - POST /api/agents/:id/start — demarre un agent
  *  - POST /api/agents/:id/stop — arrete un agent
  *
+ * ATTENTION (audit 2026-07-19) : le port par defaut a ete corrige (3001->3000,
+ * le port reel du backend Express MangoOS, cf. CLAUDE.md "Ports"). Les
+ * endpoints /api/agents (CRUD complet : creation, mission, start/stop) ne
+ * correspondent PAS a l'API MangoOS actuelle verifiee (pas de CRUD multi-agents
+ * cote MangoOS aujourd'hui) — seuls /api/projects et /api/chat sont surs
+ * d'exister. Ce pont reste donc NON VERIFIE end-to-end au-dela du port ; ne pas
+ * le considerer fonctionnel sans re-tester chaque endpoint contre le MangoOS reel.
+ *
  * Le harnais enregistre chaque action dans son graphe.
  */
 
@@ -27,7 +36,7 @@ export interface NayaOSConfig {
 }
 
 const DEFAULT_CONFIG: NayaOSConfig = {
-  baseUrl: process.env.NAYAOS_URL ?? 'http://localhost:3001',
+  baseUrl: process.env.NAYAOS_URL ?? 'http://localhost:3000',
   timeout: 60_000,
 };
 
