@@ -264,6 +264,17 @@ export class Cortex {
       this._graph.addEdge(selfNode.id, rafNode.id, 'connu', 1.0);
     }
     this._graph.save();
+
+    // Canal d'approbation Telegram (si token + chat configurés)
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const tgChat = process.env.RAF_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID;
+    if (tgToken && tgChat) {
+      const { TelegramApprovalChannel } = await import('../security/telegram-approval.js');
+      this.approvalChannel = new TelegramApprovalChannel({ token: tgToken, chatId: tgChat });
+      console.log(`[Cortex] Canal d'approbation Telegram connecté (chat ${tgChat}).`);
+    } else {
+      console.log(`[Cortex] Pas de canal Telegram (token/chat manquants) — fail-safe: approbation REFUSÉE par défaut.`);
+    }
   }
 
   async start(): Promise<void> {
