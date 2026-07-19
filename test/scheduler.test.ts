@@ -14,6 +14,15 @@ function freshScheduler(): { s: Scheduler; dir: string } {
   return { s, dir };
 }
 
+test('ensureJob: idempotent (pas de doublon par nom)', () => {
+  const { s, dir } = freshScheduler();
+  const id1 = s.ensureJob('rapport-matin', { kind: 'daily', atHour: 9 }, 'prompt A');
+  const id2 = s.ensureJob('rapport-matin', { kind: 'daily', atHour: 9 }, 'prompt B');
+  assert.equal(id1, id2, 'meme id renvoye');
+  assert.equal(s.list().filter((j) => j.name === 'rapport-matin').length, 1, 'un seul job');
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('addJob: cree un job et le persiste en JSON', () => {
   const { s, dir } = freshScheduler();
   const id = s.addJob('rapport-matinal', { kind: 'daily', atHour: 9 }, 'resume du jour');

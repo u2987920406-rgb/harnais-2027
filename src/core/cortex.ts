@@ -281,6 +281,18 @@ export class Cortex {
     console.log(stateToSummary(this.state));
     console.log(this._graph.stats());
 
+    // Job récurrent par défaut : rapport du matin (idempotent, pas de doublon).
+    // Tourne en mode idle une fois passé 9h. Résume l'état + lance build+test.
+    this.scheduler.ensureJob(
+      'rapport-matin',
+      { kind: 'daily', atHour: 9 },
+      'Fais un rapport matinal concis du projet Harnais 2027 : ' +
+      '(1) resume ce qui a change recemment (graphe + working memory), ' +
+      '(2) lance `npm run build && npm test` via shell_exec et rapporte le resultat exact (OK/erreurs, nb de tests), ' +
+      '(3) liste 3 pistes d\'amelioration prioritaires. Sois bref et factuel.',
+      { context: 'Rapport quotidien autonome pour Raf. Ne rien commiter. Verification reelle build+test obligatoire.' }
+    );
+
     // Enregistre soi-meme dans le graphe avec UPSERT (pas de doublons)
     const selfNode = this._graph.upsertNode('entity', 'Harnais-Cortex', {
       type: 'cortex',

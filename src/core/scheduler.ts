@@ -88,6 +88,23 @@ export class Scheduler {
     return ok;
   }
 
+  /**
+   * Ajoute un job SEULEMENT s'il n'en existe pas déjà un du même nom.
+   * Idempotent — sûr à appeler à chaque démarrage (pas de doublon).
+   * Renvoie l'id (existant ou nouveau).
+   */
+  ensureJob(
+    name: string,
+    schedule: JobSchedule,
+    prompt: string,
+    opts: { context?: string; skills?: string[] } = {}
+  ): string {
+    for (const job of this.jobs.values()) {
+      if (job.name === name) return job.id;
+    }
+    return this.addJob(name, schedule, prompt, opts);
+  }
+
   enableJob(id: string, enabled: boolean): void {
     const job = this.jobs.get(id);
     if (job) {
