@@ -563,7 +563,9 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
     // Boucle de tool-calling: observe -> decide -> act -> observe resultat -> repeat
     let conversation = input;
     let finalResponse = '';
-    const maxRounds = 5;
+    const maxRounds = 8;
+    let lastNavUrl = ''; // anti-doublon: evite un 2e navigate sur la meme URL
+    let havePageContent = false; // un snapshot de page directe a deja ete lu
 
     for (let round = 0; round < maxRounds; round++) {
       const response = isCritical && round === 0
@@ -600,6 +602,16 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           }
 
           console.log(`[Cortex] Appel outil: ${toolName} ${JSON.stringify(toolParams).slice(0, 80)}`);
+
+          // Anti-doublon: si le modele redemande navigate vers la MEME url alors
+          // qu'un snapshot de cette page a deja ete lu, on bloque et on l'oblige
+          // a repondre avec le contenu deja disponible (evite la boucle infinie +
+          // "limite d'actions" sans reponse utile).
+          if (toolName === 'browser_navigate' && lastNavUrl && toolParams.url === lastNavUrl && havePageContent) {
+            console.log(`[Cortex] Anti-doublon: deja charge ${lastNavUrl}, on force la reponse`);
+            toolResults.push(`La page ${lastNavUrl} est deja chargee et son contenu a ete lu (voir plus haut). Reponds directement a l'utilisateur avec ce contenu, sans rappeler d'outil.`);
+            continue;
+          }
 
           // Gouvernance: decide avant d'executer
           const decision = this.governance.decide(toolName, toolParams);
@@ -665,17 +677,21 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           // ramener le contenu de la page (pas juste "ouvert"). Comportement
           // par defaut: l'utilisateur veut l'INFO, pas une fenetre a lire lui-meme.
           if (toolName === 'browser_navigate' && result.success) {
+            lastNavUrl = String(result.data?.url ?? toolParams.url ?? '');
             const snap = await this.tools.execute('browser_snapshot', { limit: 60 });
             const snapOut = snap.success ? snap.output : '(snapshot indisponible: ' + (snap.error ?? '?') + ')';
             console.log(`[Cortex] Auto-snapshot apres navigation: ${snap.success ? 'OK' : 'ECHEC'}`);
             pushToWorkingMemory(this.state, `[outil:browser_snapshot] ${snapOut.slice(0, 600)}`, 'action', 0.8);
             toolResults.push(`Contenu lu sur la page:\n${snapOut.slice(0, 3000)}`);
+            // Page directe (pas une recherche) -> contenu disponible, le modele
+            // doit repondre avec (anti-doublon actif au prochain tour).
+            const navUrl = lastNavUrl;
+            const isSearch = /\/search\?q=|\/search\?|bing\.com\/search|duckduckgo\.com\/\?q=/.test(navUrl);
+            if (!isSearch) havePageContent = true;
 
             // Si on est sur une page de recherche (Google/Bing/DDG), on clique
             // AUTO sur le 1er resultat et on lit la page d'arrivee. L'utilisateur
             // veut le contenu de la cible, pas rester sur les resultats.
-            const navUrl = String(result.data?.url ?? '');
-            const isSearch = /\/search\?q=|\/search\?|bing\.com\/search|duckduckgo\.com\/\?q=|\/search\?/.test(navUrl);
             if (isSearch) {
               const clk = await this.tools.execute('browser_click_result', {});
               if (clk.success) {
