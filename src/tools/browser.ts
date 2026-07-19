@@ -218,11 +218,46 @@ export function createBrowserTools(): Tool[] {
     return { success: true, output: 'Navigateur ferme', durationMs: 0 };
   }
 
+  // Clique sur le PREMIER lien de resultat reel d'une page de recherche
+  // (Google/Bing/DuckDuckGo), en excluant l'UI du moteur. Attend le chargement
+  // de la page d'arrivee puis renvoie son titre.
+  async function clickResult(params: Record<string, any>): Promise<ToolResult> {
+    const start = Date.now();
+    try {
+      const cdp = await ensurePage();
+      const { result } = await cdp.send('Runtime.evaluate', {
+        expression: `(() => {
+          const all=[...document.querySelectorAll('a')];
+          const link = all.find(a => a.href && !a.href.startsWith('https://www.google.com')
+            && !a.href.startsWith('https://support.google')
+            && !a.href.startsWith('https://www.bing.com')
+            && !a.href.startsWith('https://duckduckgo.com')
+            && !a.href.startsWith('javascript:')
+            && (a.textContent||'').trim().length > 3);
+          if(!link) return JSON.stringify({ok:false, reason:'aucun lien de resultat'});
+          const href = link.href;
+          link.click();
+          return JSON.stringify({ok:true, href});
+        })()`,
+        returnByValue: true,
+      }, cdp.session);
+      const info = JSON.parse(result?.value ?? '{"ok":false}');
+      if (!info.ok) return { success: false, output: 'Aucun lien de resultat cliquable: ' + (info.reason ?? '?'), durationMs: Date.now() - start };
+      // attend chargement de la page d'arrivee
+      await new Promise(r => setTimeout(r, 4000));
+      const { result: t } = await cdp.send('Runtime.evaluate', {
+        expression: 'document.title', returnByValue: true,
+      }, cdp.session);
+      return { success: true, output: `Clique sur le 1er resultat -> ${info.href}\nTitre page d'arrivee: ${t?.value ?? '?'}`, data: { url: info.href }, durationMs: Date.now() - start };
+    } catch (e: any) { return { success: false, output: '', error: e.message, durationMs: Date.now() - start }; }
+  }
+
   return [
     { name: 'browser_navigate', description: 'Ouvre une page web dans le navigateur souverain (Chrome CDP).', risk: 'safe', parameters: [{ name: 'url', type: 'string', description: 'URL', required: true }], execute: navigate },
     { name: 'browser_snapshot', description: 'Lit les elements cliquables/texte de la page courante (DOM).', risk: 'safe', parameters: [{ name: 'limit', type: 'number', description: 'Max elements', required: false }], execute: snapshot },
     { name: 'browser_click', description: 'Clique sur un element par son index (voir browser_snapshot).', risk: 'safe', parameters: [{ name: 'index', type: 'number', description: 'Index element', required: true }], execute: click },
     { name: 'browser_type', description: 'Saisit du texte dans un champ (index).', risk: 'safe', parameters: [{ name: 'index', type: 'number', description: 'Index du champ', required: true }, { name: 'text', type: 'string', description: 'Texte a saisir', required: true }], execute: type },
     { name: 'browser_close', description: 'Ferme le navigateur souverain.', risk: 'safe', parameters: [], execute: close },
+    { name: 'browser_click_result', description: 'Clique sur le 1er lien de resultat reel d\'une page de recherche (Google/Bing/DDG) et charge la page d\'arrivee.', risk: 'safe', parameters: [], execute: clickResult },
   ];
 }

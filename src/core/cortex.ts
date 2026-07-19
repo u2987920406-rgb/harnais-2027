@@ -665,11 +665,29 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           // ramener le contenu de la page (pas juste "ouvert"). Comportement
           // par defaut: l'utilisateur veut l'INFO, pas une fenetre a lire lui-meme.
           if (toolName === 'browser_navigate' && result.success) {
-            const snap = await this.tools.execute('browser_snapshot', { limit: 40 });
+            const snap = await this.tools.execute('browser_snapshot', { limit: 60 });
             const snapOut = snap.success ? snap.output : '(snapshot indisponible: ' + (snap.error ?? '?') + ')';
             console.log(`[Cortex] Auto-snapshot apres navigation: ${snap.success ? 'OK' : 'ECHEC'}`);
             pushToWorkingMemory(this.state, `[outil:browser_snapshot] ${snapOut.slice(0, 600)}`, 'action', 0.8);
             toolResults.push(`Contenu lu sur la page:\n${snapOut.slice(0, 3000)}`);
+
+            // Si on est sur une page de recherche (Google/Bing/DDG), on clique
+            // AUTO sur le 1er resultat et on lit la page d'arrivee. L'utilisateur
+            // veut le contenu de la cible, pas rester sur les resultats.
+            const navUrl = String(result.data?.url ?? '');
+            const isSearch = /\/search\?q=|\/search\?|bing\.com\/search|duckduckgo\.com\/\?q=|\/search\?/.test(navUrl);
+            if (isSearch) {
+              const clk = await this.tools.execute('browser_click_result', {});
+              if (clk.success) {
+                console.log(`[Cortex] Auto-clic 1er resultat: OK`);
+                pushToWorkingMemory(this.state, `[outil:browser_click_result] ${clk.output.slice(0, 300)}`, 'action', 0.8);
+                const snap2 = await this.tools.execute('browser_snapshot', { limit: 60 });
+                const snap2Out = snap2.success ? snap2.output : '(snapshot indisponible: ' + (snap2.error ?? '?') + ')';
+                toolResults.push(`Page d'arrivee (1er resultat):\n${snap2Out.slice(0, 3000)}`);
+              } else {
+                console.log(`[Cortex] Auto-clic 1er resultat: ECHEC (${clk.error ?? '?'})`);
+              }
+            }
           }
         }
 
