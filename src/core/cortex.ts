@@ -20,6 +20,7 @@
 
 import { ModelBridge, type GenStrategy } from '../models/bridge.js';
 import { KnowledgeGraph } from '../memory/knowledge-graph.js';
+import { VectorStore } from '../memory/vector-store.js';
 import { Spawner } from '../cognition/spawner.js';
 import { TheoryOfMind } from '../cognition/theory-of-mind.js';
 import { Consolidation } from '../memory/consolidation.js';
@@ -104,11 +105,14 @@ export class Cortex {
   private _nayaos: NayaOSBridge;
   private _ui: UIServer | null = null;
   private governance: Governance;
+  private _vectors: VectorStore = new VectorStore();
   /** Canal d'approbation (UI/Telegram). null => fail-safe deny. */
   approvalChannel: ApprovalChannel | null = null;
 
   /** Acces public en lecture au graphe de connaissance. */
   get graph(): KnowledgeGraph { return this._graph; }
+  /** Acces public en lecture a la memoire vectorielle (RAG). */
+  get vectors(): VectorStore { return this._vectors; }
   /** Acces public en lecture au registre de skills. */
   get skills(): SkillRegistry { return this._skills; }
   /** Acces public en lecture au pont NayaOS. */
@@ -314,6 +318,14 @@ export class Cortex {
     }, 0.7);
     this._graph.addEdge(inputNode.id, respNode.id, 'connu', 0.9);
 
+    // Peuple la memoire vectorielle (RAG) avec cet episode
+    try {
+      const epId = `ep_${respNode.id}`;
+      await this._vectors.add(epId, `User: ${input}\nCortex: ${response}`, { ts: Date.now() });
+    } catch (e: any) {
+      console.log(`[Vectors] épisode non indexé: ${e.message}`);
+    }
+
     this.mode = 'idle';
     return response;
   }
@@ -395,6 +407,20 @@ Reponds en francais. Sois direct et synthetique.`;
     const stateSummary = stateToSummary(this.state);
     const toolsPrompt = this.tools.toPrompt();
 
+    // Memoire vectorielle (RAG semantique) : retrouve les episodes connexes
+    let vectorContext = '';
+    try {
+      const hits = await this._vectors.search(input, 4);
+      if (hits.length > 0) {
+        vectorContext = hits
+          .map((h, i) => `[${i + 1}] (sim=${h.score.toFixed(2)}) ${h.doc.text}`)
+          .join('\n');
+      }
+    } catch (e: any) {
+      // embeddings indisponibles (Ollama/modèle) -> on ignore silencieusement
+      console.log(`[Vectors] RAG ignoré: ${e.message}`);
+    }
+
     // Charge les skills pertinents: doctrine par defaut + match par texte
     const doctrineSkills = this._skills.byTags(['doctrine']);
     const textSkills = this._skills.byText(input).filter(s =>
@@ -429,6 +455,9 @@ ${stateSummary}
 
 - Ton modele de l'utilisateur:
 ${tomContext}
+
+- Ta memoire vectorielle (RAG semantique, episodes passes similaires):
+${vectorContext || '(vide — aucun souvenir semantique disponible)'}
 
 - Tes outils:
 ${toolsPrompt}
