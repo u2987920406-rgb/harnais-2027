@@ -564,8 +564,8 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
     let conversation = input;
     let finalResponse = '';
     const maxRounds = 8;
-    let lastNavUrl = ''; // anti-doublon: evite un 2e navigate sur la meme URL
-    let havePageContent = false; // un snapshot de page directe a deja ete lu
+    let lastNavUrl = ''; // derniere URL naviguee
+    let pageRead = false; // une page a deja ete lue (directe ou apres clic recherche) -> bloque re-nav
 
     for (let round = 0; round < maxRounds; round++) {
       const response = isCritical && round === 0
@@ -603,13 +603,14 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
 
           console.log(`[Cortex] Appel outil: ${toolName} ${JSON.stringify(toolParams).slice(0, 80)}`);
 
-          // Anti-doublon: si le modele redemande navigate vers la MEME url alors
-          // qu'un snapshot de cette page a deja ete lu, on bloque et on l'oblige
-          // a repondre avec le contenu deja disponible (evite la boucle infinie +
-          // "limite d'actions" sans reponse utile).
-          if (toolName === 'browser_navigate' && lastNavUrl && toolParams.url === lastNavUrl && havePageContent) {
-            console.log(`[Cortex] Anti-doublon: deja charge ${lastNavUrl}, on force la reponse`);
-            toolResults.push(`La page ${lastNavUrl} est deja chargee et son contenu a ete lu (voir plus haut). Reponds directement a l'utilisateur avec ce contenu, sans rappeler d'outil.`);
+          // Anti-boucle: une fois qu'une page a ete lue dans ce tour (navigate
+          // direct OU clic sur 1er resultat de recherche), on BLOQUE toute
+          // nouvelle navigation et on force le modele a repondre avec le contenu
+          // deja disponible. Evite "navigate/snapshot/navigate... limite
+          // d'actions" sans reponse utile.
+          if (toolName === 'browser_navigate' && pageRead) {
+            console.log(`[Cortex] Anti-boucle: page deja lue, navigation bloquee -> on force la reponse`);
+            toolResults.push(`Une page a deja ete chargee et lue (voir plus haut). Reponds directement a l'utilisateur avec ce contenu, sans rappeler d'outil.`);
             continue;
           }
 
@@ -683,11 +684,11 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
             console.log(`[Cortex] Auto-snapshot apres navigation: ${snap.success ? 'OK' : 'ECHEC'}`);
             pushToWorkingMemory(this.state, `[outil:browser_snapshot] ${snapOut.slice(0, 600)}`, 'action', 0.8);
             toolResults.push(`Contenu lu sur la page:\n${snapOut.slice(0, 3000)}`);
-            // Page directe (pas une recherche) -> contenu disponible, le modele
-            // doit repondre avec (anti-doublon actif au prochain tour).
+            // Page lue (directe OU recherche): on marque pageRead pour bloquer
+            // tout nouveau navigate dans les tours suivants (anti-boucle).
+            pageRead = true;
             const navUrl = lastNavUrl;
             const isSearch = /\/search\?q=|\/search\?|bing\.com\/search|duckduckgo\.com\/\?q=/.test(navUrl);
-            if (!isSearch) havePageContent = true;
 
             // Si on est sur une page de recherche (Google/Bing/DDG), on clique
             // AUTO sur le 1er resultat et on lit la page d'arrivee. L'utilisateur
