@@ -67,16 +67,33 @@ export class VectorStore {
     this.save();
   }
 
-  /** Recherche les k plus proches (cosine similarity). */
+  /**
+   * Recherche les k plus proches avec reranking hybride:
+   *   1. Recupere les 2*k candidats par similarite cosine (semantique)
+   *   2. Re-score chaque candidat = 0.65*cosine + 0.35*bm25 (lexical)
+   *      -> corrige les faux-positifs semantiques (ex: mots differents,
+   *         sens proches mais irrelevants pour la requete precise)
+   *   3. Retourne les k re-tries
+   * Approche souveraine: aucun appel LLM (comme Chroma/Weaviate en local).
+   */
   async search(query: string, k = 5): Promise<SearchHit[]> {
     if (this.docs.length === 0) return [];
     const qv = await this.embed(query);
-    const scored = this.docs.map((doc) => ({
-      doc,
-      score: cosine(qv, doc.vector),
-    }));
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, k);
+
+    // 1. candidats par cosine (pre-filtre 2x plus large)
+    const cand = this.docs
+      .map((doc) => ({ doc, score: cosine(qv, doc.vector) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(k * 2, k));
+
+    // 2. reranking hybride
+    const reranked = cand.map((c) => {
+      const lex = bm25Score(query, c.doc.text);
+      const hybrid = 0.65 * c.score + 0.35 * lex;
+      return { doc: c.doc, score: hybrid, semantic: c.score, lexical: lex };
+    });
+    reranked.sort((a, b) => b.score - a.score);
+    return reranked.slice(0, k).map((r) => ({ doc: r.doc, score: r.score }));
   }
 
   /** Recherche synchrone (utilise un vecteur pré-calculé). */
@@ -117,4 +134,39 @@ export function cosine(a: number[], b: number[]): number {
   }
   if (na === 0 || nb === 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/**
+ * Score BM25 simplifié (lexical) entre une requête et un document.
+ * Normalisé dans [0,1] via 1 - 1/(1+score) pour un mélange hybride avec cosine.
+ * Souverain, 0 dépendance — corrige les faux-positifs sémantiques.
+ */
+export function bm25Score(query: string, doc: string): number {
+  const qTerms = tokenize(query);
+  const dTerms = tokenize(doc);
+  if (qTerms.length === 0 || dTerms.length === 0) return 0;
+
+  const df: Record<string, number> = {};
+  for (const t of qTerms) df[t] = (df[t] ?? 0) + 1;
+  const docLen = dTerms.length;
+  const avgLen = docLen; // approximation: 1 seul doc, donc avg = sa longueur
+  const k1 = 1.5, b = 0.75;
+  const freq: Record<string, number> = {};
+  for (const t of dTerms) freq[t] = (freq[t] ?? 0) + 1;
+
+  let score = 0;
+  for (const t of qTerms) {
+    const f = freq[t] ?? 0;
+    if (f === 0) continue;
+    const idf = Math.log(1 + (1 / (1 + 0))); // df=1 (terme présent), simplifié
+    const denom = f + k1 * (1 - b + b * (docLen / avgLen));
+    score += idf * (f * (k1 + 1)) / denom;
+  }
+  // normalise dans [0,1]
+  return 1 - 1 / (1 + score);
+}
+
+/** Tokenise: minuscules, alphanum, enlève la ponctuation. */
+function tokenize(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9àâäéèêëîïôöùûüç]+/g) ?? []);
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { VectorStore, cosine } from '../src/memory/vector-store.js';
+import { VectorStore, cosine, bm25Score } from '../src/memory/vector-store.js';
 
 test('cosine: identique => 1, orthogonaux => 0', () => {
   assert.ok(Math.abs(cosine([1, 0], [1, 0]) - 1) < 1e-9);
@@ -9,15 +9,19 @@ test('cosine: identique => 1, orthogonaux => 0', () => {
 });
 
 test('cosine: longueurs differentes => tronque proprement', () => {
-  // ne doit pas crasher, utilise min length
   const s = cosine([1, 2, 3, 4], [1, 2, 3]);
   assert.ok(s >= 0 && s <= 1);
 });
 
+test('bm25Score: document avec termes de la requete => > 0', () => {
+  const s1 = bm25Score('securiser serveur linux', 'utilise ufw pour securiser le serveur linux');
+  const s2 = bm25Score('securiser serveur linux', 'la voiture rouge roule vite');
+  assert.ok(s1 > 0);
+  assert.ok(s2 === 0 || s2 < s1);
+});
+
 test('VectorStore: add + search via fetch mock (embeddings simules)', async () => {
-  // Mock global.fetch pour simuler Ollama /api/embeddings
   const fakeEmbed = (text: string): number[] => {
-    // vecteur deterministe: compte les lettres (poids simple)
     const v = new Array(8).fill(0);
     for (const ch of text) v[ch.charCodeAt(0) % 8] += 1;
     return v;
@@ -40,13 +44,11 @@ test('VectorStore: add + search via fetch mock (embeddings simules)', async () =
 
   const hits = await store.search('un chat qui court', 2);
   assert.equal(hits.length, 2);
-  // 'a' et 'c' parlent de chat => doivent dominer sur 'b' (voiture)
   const ids = hits.map((h) => h.doc.id);
   assert.ok(ids.includes('a'));
   assert.ok(ids.includes('c'));
   assert.ok(!ids.includes('b'));
 
-  // restaure
   (global as any).fetch = origFetch;
 });
 
@@ -55,3 +57,4 @@ test('VectorStore: search vide si aucun doc', async () => {
   const hits = await store.search('rien', 3);
   assert.equal(hits.length, 0);
 });
+
