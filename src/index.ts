@@ -46,6 +46,16 @@ async function main() {
   await cortex.init();
   printBanner();
 
+  // Avertissement de securite selon le mode de gouvernance actif
+  const mode = cortex.governanceMode;
+  if (mode === 'permission' || mode === 'edit') {
+    const couleur = mode === 'permission' ? C.cyan : C.magenta;
+    console.log(`${couleur}${C.bold}⚠  MODE ${mode.toUpperCase()} ACTIF${C.reset}${couleur} — les actions (shell_exec / ecriture) requierent votre validation.${C.reset}`);
+    console.log(`${C.dim}   Basculez avec /mode auto pour le mode libre, ou /mode plan pour lecture seule.${C.reset}\n`);
+  } else if (mode === 'plan') {
+    console.log(`${C.yellow}${C.bold}⚠  MODE PLAN ACTIF${C.reset}${C.yellow} — aucune action ne sera executee (lecture seule).${C.reset}\n`);
+  }
+
   // Mode inspection
   if (args.includes('--inspect')) {
     const introspection = await cortex.introspect();
