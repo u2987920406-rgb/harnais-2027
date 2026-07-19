@@ -80,13 +80,18 @@ async function getCdp(): Promise<CDPClient> {
   if (state.cdp) return state.cdp;
   if (!existsSync(CHROME_PATH)) throw new Error(`Chrome introuvable: ${CHROME_PATH} (definir CHROME_PATH)`);
 
-  // Lance Chrome en mode debug
+  // Lance Chrome en mode debug.
+  // NB: on NE met PAS --headless : l'utilisateur veut VOIR la fenetre
+  // (cas "ouvre une page web et va sur google"). Chrome s'ouvre comme une
+  // vraie fenetre visible et pilotable. --remote-debugging-port reste
+  // obligatoire pour le CDP (sinon Atlas ne peut pas naviguer).
   const userData = join(__dirname, '..', '..', '.chrome-debug');
   state.proc = spawn(CHROME_PATH, [
     `--remote-debugging-port=${DEBUG_PORT}`,
-    '--headless=new',
     '--no-first-run',
     '--no-default-browser-check',
+    '--new-window',
+    '--window-position=120,80',
     `--user-data-dir=${userData}`,
     'about:blank',
   ], { stdio: 'ignore' });
