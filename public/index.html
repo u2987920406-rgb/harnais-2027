@@ -184,7 +184,14 @@
           const t = line.trim();
           if (!t.startsWith('data:')) continue;
           const payload = t.slice(5).trim();
-          try { acc += JSON.parse(payload); cortexMsg.textContent = acc; chat.scrollTop = chat.scrollHeight; }
+          try {
+            const p = JSON.parse(payload);
+            // BUG FIX : le serveur emet des tokens (strings). Si jamais un
+            // payload JSON n'est pas une string (objet/tableau), on le serialise
+            // au lieu de faire `acc += objet` qui produit "[object Object]".
+            acc += typeof p === 'string' ? p : JSON.stringify(p);
+            cortexMsg.textContent = acc; chat.scrollTop = chat.scrollHeight;
+          }
           catch { /* meta/done/error */ }
         }
       }

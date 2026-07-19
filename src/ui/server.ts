@@ -197,8 +197,15 @@ export class UIServer {
           const ctx = this.cortex.graph.toContext(10);
           const prompt = `[Contexte graphe]\n${ctx}\n\n[Message utilisateur]\n${message}\n\nReponds en francais.`;
           try {
-            for await (const token of this.bridge.thinkStream(prompt, 'general')) {
-              res.write(`data: ${JSON.stringify(token)}\n\n`);
+            // BUG FIX : on passe par cortex.inject() (boucle tool-calling +
+            // gouvernance + verification), PAS thinkStream direct — sinon les
+            // outils (browser_navigate etc.) ne sont jamais declenches.
+            const response = await this.cortex.inject(message);
+            // Stream progressif : on decoupe la reponse finale en tokens
+            // (approx par mots) pour l'effet d'ecriture en temps reel.
+            const tokens = response.match(/\S+\s*/g) ?? [response];
+            for (const t of tokens) {
+              res.write(`data: ${JSON.stringify(t)}\n\n`);
             }
             res.write('event: done\ndata: {}\n\n');
           } catch (e: any) {
