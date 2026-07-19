@@ -21,6 +21,7 @@
 import { ModelBridge, type GenStrategy } from '../models/bridge.js';
 import { KnowledgeGraph } from '../memory/knowledge-graph.js';
 import { VectorStore } from '../memory/vector-store.js';
+import { AuditLog } from '../security/audit-log.js';
 import { Spawner } from '../cognition/spawner.js';
 import { TheoryOfMind } from '../cognition/theory-of-mind.js';
 import { Consolidation } from '../memory/consolidation.js';
@@ -106,6 +107,7 @@ export class Cortex {
   private _ui: UIServer | null = null;
   private governance: Governance;
   private _vectors: VectorStore = new VectorStore();
+  private _audit: AuditLog = new AuditLog();
   /** Canal d'approbation (UI/Telegram). null => fail-safe deny. */
   approvalChannel: ApprovalChannel | null = null;
 
@@ -113,6 +115,8 @@ export class Cortex {
   get graph(): KnowledgeGraph { return this._graph; }
   /** Acces public en lecture a la memoire vectorielle (RAG). */
   get vectors(): VectorStore { return this._vectors; }
+  /** Acces public en lecture au journal d'audit signé. */
+  get audit(): AuditLog { return this._audit; }
   /** Acces public en lecture au registre de skills. */
   get skills(): SkillRegistry { return this._skills; }
   /** Acces public en lecture au pont NayaOS. */
@@ -545,6 +549,7 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           const decision = this.governance.decide(toolName, toolParams);
           if (decision.action === 'deny') {
             console.log(`[Cortex] REFUSE (${decision.reason}): ${toolName}`);
+            this._audit.record(toolName, toolParams, 'deny', this.config.governanceMode);
             toolResults.push(`REFUSE (${decision.reason}): ${toolName}`);
             continue;
           }
@@ -552,9 +557,13 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
             const approved = await this.requestApproval(toolName, toolParams, decision.reason);
             if (!approved) {
               console.log(`[Cortex] ANNULE par l'utilisateur: ${toolName}`);
+              this._audit.record(toolName, toolParams, 'ask-denied', this.config.governanceMode);
               toolResults.push(`ANNULE (utilisateur): ${toolName}`);
               continue;
             }
+            this._audit.record(toolName, toolParams, 'ask-approved', this.config.governanceMode);
+          } else {
+            this._audit.record(toolName, toolParams, 'allow', this.config.governanceMode);
           }
 
           const result = await this.tools.execute(toolName, toolParams);
