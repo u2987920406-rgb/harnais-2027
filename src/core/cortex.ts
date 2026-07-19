@@ -655,6 +655,17 @@ Reponds en francais. Sois direct, profond, pas verbeux.`;
           }
 
           toolResults.push(`Resultat de ${toolName}:\n${result.output.slice(0, 3000)}${verifyNote}`);
+
+          // AUTO-LECTURE apres navigation: on enchaine un browser_snapshot pour
+          // ramener le contenu de la page (pas juste "ouvert"). Comportement
+          // par defaut: l'utilisateur veut l'INFO, pas une fenetre a lire lui-meme.
+          if (toolName === 'browser_navigate' && result.success) {
+            const snap = await this.tools.execute('browser_snapshot', { limit: 40 });
+            const snapOut = snap.success ? snap.output : '(snapshot indisponible: ' + (snap.error ?? '?') + ')';
+            console.log(`[Cortex] Auto-snapshot apres navigation: ${snap.success ? 'OK' : 'ECHEC'}`);
+            pushToWorkingMemory(this.state, `[outil:browser_snapshot] ${snapOut.slice(0, 600)}`, 'action', 0.8);
+            toolResults.push(`Contenu lu sur la page:\n${snapOut.slice(0, 3000)}`);
+          }
         }
 
         // Injecte tous les resultats dans la conversation pour le prochain round
