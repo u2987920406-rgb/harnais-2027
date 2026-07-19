@@ -110,6 +110,7 @@ export class Cortex {
   private scheduler: Scheduler;
   private mcpBridges: MCPBridge[] = [];
   private _procs: ProcessRegistry = new ProcessRegistry();
+  private notifier: import('../security/telegram-notifier.js').TelegramNotifier | null = null;
   private _nayaos: NayaOSBridge;
   private _ui: UIServer | null = null;
   private governance: Governance;
@@ -321,6 +322,9 @@ export class Cortex {
       const { TelegramApprovalChannel } = await import('../security/telegram-approval.js');
       this.approvalChannel = new TelegramApprovalChannel({ token: tgToken, chatId: tgChat, approverUserId: tgApprover });
       console.log(`[Cortex] Canal d'approbation Telegram connecté (chat ${tgChat}).`);
+      // Notifier sortant (rapports/alertes) — réutilise le même bot.
+      const { TelegramNotifier } = await import('../security/telegram-notifier.js');
+      this.notifier = TelegramNotifier.fromEnv();
     } else {
       console.log(`[Cortex] Pas de canal Telegram (token/chat manquants) — fail-safe: approbation REFUSÉE par défaut.`);
     }
@@ -966,9 +970,17 @@ Modèles: ${JSON.stringify(bridgeStats, null, 2)}
     if (due.length === 0) return;
     for (const job of due) {
       try {
-        await this.scheduler.run(job);
+        const output = await this.scheduler.run(job);
+        // Pousse le rapport à Raf sur Telegram (fire-and-forget, non bloquant).
+        if (this.notifier) {
+          const msg = `🌅 *ATLAS — ${job.name}*\n\n${output}`;
+          this.notifier.send(msg).catch(() => { /* déjà loggé, on ignore */ });
+        }
       } catch (err: any) {
         console.error(`[Cortex] Job ${job.name} a échoué: ${err.message}`);
+        if (this.notifier) {
+          this.notifier.send(`⚠️ *ATLAS — ${job.name} a échoué*\n\n${err.message}`).catch(() => {});
+        }
       }
     }
   }
