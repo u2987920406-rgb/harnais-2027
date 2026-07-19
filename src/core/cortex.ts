@@ -80,7 +80,7 @@ const DEFAULT_CONFIG: CortexConfig = {
   sleepInterval: 50,
   maxBackgroundThreads: 5,
   statePath: join(__dirname, '..', '..', 'data', 'cortex-state.json'),
-  governanceMode: 'auto',
+  governanceMode: 'permission',
   sandbox: 'whitelist',
   allowDangerous: true,
 };
