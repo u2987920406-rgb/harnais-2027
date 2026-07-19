@@ -1,3 +1,8 @@
+# Secrets (token Telegram, cles API) — NE JAMAIS COMMITER
+.env
+.env.*
+!.env.example
+
 # Build / deps
 node_modules/
 dist/
